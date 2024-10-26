@@ -12,3 +12,5 @@ import numpy as np
 
 
 #%%
+import os
+os.listdir('data/')

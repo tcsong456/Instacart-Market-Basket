@@ -5,8 +5,26 @@ Created on Sat Oct 26 12:16:05 2024
 @author: congx
 """
 import numpy as np
+import pandas as pd
 from pandas.api.types import is_numeric_dtype,is_float_dtype
 
+def load_data(path):
+    def decorator(func):
+        data_dict = {}
+        def wrapper(*args,**kwargs):
+            import os
+            data_list = os.listdir(path)
+            for dt in data_list:
+                d_path = os.path.join(path,dt)
+                d = pd.read_csv(d_path)
+                d_name = dt[:dt.find('.')]
+                data = func(d)
+                data_dict[d_name] = data
+            return data_dict
+        return wrapper
+    return decorator
+
+@load_data('data/')
 def optimize_dtypes(df):
     for col in df.columns:
         col_data = df[col]
@@ -32,3 +50,6 @@ def optimize_dtypes(df):
 
 
 #%%
+import os
+s = 'products.csv'
+s[:s.find('.')]
