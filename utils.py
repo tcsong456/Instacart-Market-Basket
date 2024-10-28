@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 from pandas.api.types import is_integer_dtype,is_float_dtype
 
-def _optimize_dtypes(df):
+def optimize_dtypes(df):
     for col in df.columns:
         col_data = df[col]
         if is_integer_dtype(col_data):
@@ -46,7 +46,7 @@ def load_data(path):
                 if num_nulls > 0:
                     d[col].fillna(0,inplace=True)
                     logger.warning('the column {} of {} dataset has {} number of null values'.format(col,d_name,num_nulls))
-        data = _optimize_dtypes(d)
+        data = optimize_dtypes(d)
         data_dict[d_name] = data
     return data_dict
 
