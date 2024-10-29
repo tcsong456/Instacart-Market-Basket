@@ -5,10 +5,12 @@ Created on Sat Oct 26 12:16:05 2024
 @author: congx
 """
 import os
+import torch
 import logging
 import warnings
 import numpy as np
 import pandas as pd
+from torch.nn import functional as F
 from pandas.api.types import is_integer_dtype,is_float_dtype
 
 def optimize_dtypes(df):
@@ -69,6 +71,17 @@ def split_time_zone(hour):
         return 'evening'
     else:
         return 'midnight'
+    
+def get_label(dts,num_classes):
+    ohs = []
+    for dt in dts:
+        dt = torch.tensor(dt)
+        oh = F.one_hot(dt,num_classes=num_classes)
+        oh_basket,_ = torch.max(oh,dim=0)
+        ohs.append(oh_basket)
+    label = torch.stack(ohs,dim=0)
+    return label
 
 #%%
+
 

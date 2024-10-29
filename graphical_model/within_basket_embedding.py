@@ -11,16 +11,17 @@ import warnings
 warnings.filterwarnings('ignore')
 import pandas as pd
 import numpy as np
-from utils import load_data
+from utils import load_data,get_label
 from torch.utils.data import Dataset,DataLoader
 from torch import nn
-from pandas.api.types import is_integer_dtype,is_float_dtype
+from pandas.api.types import is_float_dtype
 from collections import defaultdict
 
 class DNNSTP(nn.Module):
     def __init__(self,
                  n_items,
                  emb_dim):
+        super().__init__()
         self.item_embedding = nn.Embedding(n_items,emb_dim)
 
 class DnnstpSet(Dataset):
@@ -91,52 +92,80 @@ class DnnstpSet(Dataset):
             edge_weights.append(torch.Tensor(edge_weight))
         edge_weights = torch.stack(edge_weights)
         
-        return g,products_embedding,edge_weight,unique_items,user_baskets
+        return g,products_embedding,edge_weights,unique_items,user_baskets
+    
+    def __len__(self):
+        return len(self.user_products)
+
+def collate(batch):
+    ret = []
+    for idx,data in enumerate(zip(*batch)):
+        if isinstance(data[0],dgl.DGLGraph):
+            ret.append(dgl.batch(data))
+        elif isinstance(data[0],torch.Tensor):
+            if idx == 2:
+                max_length = max([d.shape[0] for d in data])
+                edge_weights,data_lengths = [],[]
+                for d in data:
+                    if d.shape[0] < max_length:
+                        print(d)
+                        edge_weights.append(torch.cat((d,torch.stack([torch.eye(int(d.shape[1]**0.5)).flatten() \
+                                              for _ in range(max_length - d.shape[0])],dim=0)),dim=0))
+                    else:
+                        edge_weights.append(d)
+                    data_lengths.append(d.shape[0])
+                ret.append(torch.cat(edge_weights,dim=1))
+                ret.append(torch.tensor(data_lengths))
+            else:
+                ret.append(torch.cat(data,dim=0))
+        elif isinstance(data[0],list):
+            user_data_batch = data
+        else:
+            raise ValueError('unknown data type {} is found'.format(type(data)))
+    
+    y = get_label([user_data[-1] for user_data in user_data_batch],num_classes=49688)
+    ret.append(y)
+    
+    user_freq = torch.zeros([len(batch),49688])
+    for idx,user_baskets in enumerate(user_data_batch):
+        for user_basket in user_baskets:
+            for item in user_basket:
+                user_freq[idx,item] += 1
+    ret.append(torch.Tensor(user_freq))
+    return ret
+
+if __name__ == '__main__':
+    # model = DNNSTP(49688,100)
+    # dataset = DnnstpSet('data/',model.item_embedding)
+    dl = DataLoader(dataset=dataset,
+                    batch_size=8,
+                    shuffle=True,
+                    drop_last=False,
+                    collate_fn=collate)
+    cnt = 0
+    for batch in dl:
+        cnt += 1
+        if cnt == 1:
+            break
+                
 
 
 #%%
-# import itertools
-# import torch
-# data_dict = load_data('data/')
-# orders = data_dict['orders']
-# orders_prior,orders_train = data_dict['order_products__prior'],data_dict['order_products__train']
-# products = data_dict['products']
-# aisles,departments = data_dict['aisles'],data_dict['departments']
-
-# order_products = pd.concat([orders_prior,orders_train])
-# del orders_prior,orders_train 
-# orders = orders.merge(order_products,how='left',on='order_id').merge(products,\
-#           how='left',on='product_id').merge(aisles,how='left',on='aisle_id').merge(departments,how='left',on='department_id')
-# orders = orders[orders['eval_set']!='test']
-# del order_products
-
-# from utils import optimize_dtypes
-# for col,dtype in zip(orders.dtypes.index,orders.dtypes.values):
-#     if is_float_dtype(dtype):
-#         if pd.isnull(orders[col]).any():
-#             orders[col].fillna(0,inplace=True)
-#         orders[col] = orders[col].astype(np.int64)
-# orders = optimize_dtypes(orders)
-# user_order_products = orders.groupby(['user_id','order_id','order_number'])['product_id'].apply(list)
-# user_order_products = user_order_products.reset_index().sort_values(['user_id','order_number'])
-# user_products = user_order_products.groupby(['user_id'])['product_id'].apply(list)
-
-# user_products = user_products.to_dict()
-# baskets = user_products[123]
-# unique_items = torch.unique(torch.tensor(list(itertools.chain.from_iterable(baskets[:-1]))))
-# item_emb = nn.Embedding((50000), 100)
-# products_embedding = item_emb(unique_items)
-# nodes = torch.tensor(list(range(products_embedding.shape[0])))
-# src = np.stack([nodes for _ in range(nodes.shape[0])],axis=1).flatten().tolist()
-# dst = np.stack([nodes for _ in range(nodes.shape[0])],axis=0).flatten().tolist()
-
+batch[6]
 
 
 #%%
-model = DNNSTP(49688,100)
+# import time
+# start = time.time()
+# model = DNNSTP(49688,100)
+# ds = DnnstpSet('data/',model.item_embedding)
+# end = time() - start
+
 
 #%%
-z = np.array(edge_weights)
+# z = np.array(ds[123][2])
+# ds[123][-1]
+len(batch)
 
 
 
