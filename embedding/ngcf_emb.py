@@ -4,6 +4,7 @@ Created on Fri Nov  1 20:19:39 2024
 
 @author: congx
 """
+import dgl
 import pandas as pd
 import numpy as np
 from tqdm import tqdm
@@ -48,18 +49,23 @@ def data_process(path):
 
 def construct_graph(user_item,item_item):
     total_users = user_item[:,0].max()
-    toal_items = user_item[:,1].max()
+    total_items = user_item[:,1].max()
     users = [i for i in range(total_users)]
     items = [i for i in range(total_items)]
     
     link_dict = {
                   ('user','user_self_link','user'):(users,users),
                   ('item','item_self_link','item'):(items,items),
-                  
+                  ('user','user_item_link','item'):(user_item[:,0].tolist(),user_item[:,1].tolist()),
+                  ('item','item_user_link','user'):(user_item[:,1].tolist(),user_item[:,0].tolist()),
+                  ('item','item_item_link','item'):(item_item[:,0].tolist(),item_item[:,1].tolist())
                     }
+    num_dict = {'user':total_users,'item':total_items}
+    return dgl.heterograph(link_dict,num_dict)
 
 if __name__ == '__main__':
-    user_item_interaction,item_item_interaction = data_process('data/')
+    # user_item_interaction,item_item_interaction = data_process('data/')
+    graph = construct_graph(user_item_interaction,item_item_interaction)
 
 #%%
 import gc
