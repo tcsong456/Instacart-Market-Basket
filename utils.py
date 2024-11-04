@@ -10,6 +10,7 @@ import logging
 import warnings
 import numpy as np
 import pandas as pd
+from time import time
 from torch.nn import functional as F
 from pandas.api.types import is_integer_dtype,is_float_dtype
 
@@ -81,6 +82,19 @@ def get_label(dts,num_classes):
         ohs.append(oh_basket)
     label = torch.stack(ohs,dim=0)
     return label
+
+class Timer:
+    def __init__(self):
+        self.message = 'timer starts'
+        
+    def __enter__(self):
+        print(self.message)
+        self.start = time()
+    
+    def __exit__(self,exc_type, exc_val, exc_tb):
+        end = time()
+        elapsed = end - self.start
+        print(f'it took {elapsed:.0f} seconds to complete')
 
 #%%
 
