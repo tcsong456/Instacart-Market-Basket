@@ -132,7 +132,7 @@ class Sampler:
         gc.collect()
         
         pos_item_dict = pos_items.to_dict()
-        rows = tqdm(t.iterrows(),total=t.shape[0],desc='building nagetive item samples',leave=False)
+        rows = tqdm(t.iterrows(),total=t.shape[0],desc='building nagetive item samples')
         neg_samples = np.zeros([t['prod_src'].max(),num_neg_items],dtype=np.int32)
         products['prob'] = products['product_id'].map(self.item_freq_dict)
         for _,row in rows:
@@ -156,16 +156,20 @@ class Sampler:
             sampled_index = torch.multinomial(torch.Tensor(dist),num_neg,replacement=False)
             sampled_items = selected_items[sampled_index]
             neg_samples[prod-1,:num_neg] = sampled_items
-        return neg_samples
             
+            if num_neg_items > items.shape[0]:
+                filled_items = num_neg_items - items.shape[0]
+                non_items = products[~products['aisle_id'].isin(aisles)]
+                nitems = non_items['product_id']
+                pure_items = list(set(nitems) - set(pos_item))
+                non_items = non_items[non_items['product_id'].isin(pure_items)]
+                pure_items,pure_probs = np.array(non_items['product_id']),np.array(non_items['prob'])
+                indices = torch.multinomial(torch.from_numpy(pure_probs),filled_items,replecement=False)
+                extra_items = pure_items[indices]
+                neg_samples[prod-1,num_neg:] = extra_items
+            
+        return neg_samples
 
-#%%
-from utils import Timer
-with Timer() as timer:
-    z = Sampler('data/',mode='emb')
-    neg_item_samples = z.item_neg_samples(num_neg_aisles=5,num_neg_items=100)
-    neg_user_samples = z.user_neg_samples(num_neg_users=100)
-    
-    
+data_sampler = Sampler('data',mode='emb')
 
 #%%
