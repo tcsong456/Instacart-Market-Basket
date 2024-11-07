@@ -1,0 +1,44 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Thu Nov  7 18:09:19 2024
+
+@author: congx
+"""
+import numpy as np
+import pandas as pd
+from utils import load_data,optimize_dtypes,split_time_zone
+from pandas.api.types import is_float_dtype
+
+week_days_map = {0:'Mon',
+                 1:'Tue',
+                 2:'Wed',
+                 3:'Thu',
+                 4:'Fri',
+                 5:'Sat',
+                 6:'Sun'}
+
+data_dict = load_data('data/')
+orders = data_dict['orders']
+orders_prior,orders_train = data_dict['order_products__prior'],data_dict['order_products__train']
+products = data_dict['products']
+aisles,departments = data_dict['aisles'],data_dict['departments']
+
+order_products = pd.concat([orders_prior,orders_train])
+del orders_prior,orders_train 
+orders = orders.merge(order_products,how='left',on='order_id').merge(products,\
+          how='left',on='product_id').merge(aisles,how='left',on='aisle_id').merge(departments,how='left',on='department_id')
+orders = orders[orders['eval_set']!='test']
+del order_products
+for col,dtype in zip(orders.dtypes.index,orders.dtypes.values):
+    if is_float_dtype(dtype):
+        orders[col] = orders[col].astype(np.int32)
+orders = optimize_dtypes(orders)
+
+orders['order_dow'] = orders['order_dow'].map(week_days_map)
+orders['time_zone'] = orders['order_hour_of_day'].apply(split_time_zone)
+orders['time_zone'] = orders['order_dow'] + '_' + orders['time_zone']
+orders.to_csv('orders_info.csv')
+
+
+
+#%%

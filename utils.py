@@ -47,7 +47,7 @@ def load_data(path):
             for col in d.columns:
                 num_nulls = pd.isnull(d[col]).sum()
                 if num_nulls > 0:
-                    d[col].fillna(0,inplace=True)
+                    d[col].fillna(-1,inplace=True)
                     logger.warning('the column {} of {} dataset has {} number of null values'.format(col,d_name,num_nulls))
         data = optimize_dtypes(d)
         data_dict[d_name] = data
