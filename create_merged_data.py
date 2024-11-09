@@ -6,6 +6,7 @@ Created on Thu Nov  7 18:09:19 2024
 """
 import numpy as np
 import pandas as pd
+from sklearn.preprocessing import LabelEncoder
 from utils import load_data,optimize_dtypes,split_time_zone
 from pandas.api.types import is_float_dtype
 
@@ -29,15 +30,20 @@ orders = orders.merge(order_products,how='left',on='order_id').merge(products,\
           how='left',on='product_id').merge(aisles,how='left',on='aisle_id').merge(departments,how='left',on='department_id')
 orders = orders[orders['eval_set']!='test']
 del order_products
+
+orders['order_dow_text'] = orders['order_dow'].map(week_days_map)
+orders['time_zone'] = orders['order_hour_of_day'].apply(split_time_zone)
+orders['time_zone'] = orders['order_dow_text'] + '-' + orders['time_zone']
+le = LabelEncoder()
+orders['time_zone'] = le.fit_transform(orders['time_zone'])
+del orders['order_dow_text']
+
 for col,dtype in zip(orders.dtypes.index,orders.dtypes.values):
     if is_float_dtype(dtype):
         orders[col] = orders[col].astype(np.int32)
 orders = optimize_dtypes(orders)
 
-orders['order_dow'] = orders['order_dow'].map(week_days_map)
-orders['time_zone'] = orders['order_hour_of_day'].apply(split_time_zone)
-orders['time_zone'] = orders['order_dow'] + '_' + orders['time_zone']
-orders.to_csv('orders_info.csv')
+orders.to_csv('data/orders_info.csv',index=False)
 
 
 
