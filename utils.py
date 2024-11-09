@@ -83,35 +83,6 @@ def split_time_zone(hour):
 #     label = torch.stack(ohs,dim=0)
 #     return label
 
-def product_dataloader(inp,
-                       data_dict,
-                       batch_size=32,
-                       shuffle=True,
-                       drop_last=True
-                       ):
-    def batch_gen():
-        total_len = inp.shape[0]
-        index = np.arange(total_len)
-        if shuffle:
-            np.random.shuffle(index)
-        for i in range(0,total_len,batch_size):
-            idx = index[i:i+batch_size]
-            if len(idx) < batch_size and drop_last:
-                break
-            else:
-                yield inp[idx]
-                
-    for batch in batch_gen():
-        full_batch = []
-        batch_lengths = []
-        for row in batch:
-            key = (row[0],row[1])
-            data,length = data_dict[key]
-            full_batch.append(data)
-            batch_lengths.append(length)
-        full_batch = np.stack(full_batch)
-        yield full_batch,batch_lengths
-
 class Timer:
     def __init__(self):
         self.message = 'timer starts'

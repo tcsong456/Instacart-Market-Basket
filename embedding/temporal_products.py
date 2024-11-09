@@ -4,14 +4,15 @@ Created on Thu Nov  7 19:42:30 2024
 
 @author: congx
 """
+import torch
 import warnings
 import numpy as np
 import pandas as pd
-from utils import Timer,logger,product_dataloader
+from utils import Timer,logger
 from itertools import chain
+from nn_model.lstm import ProdLSTM
 from sklearn.preprocessing import OneHotEncoder
 from sklearn.model_selection import train_test_split
-from torch.utils.data import Dataset,DataLoader
 
 def data_processing(data):
     data = data.sort_values(['user_id','order_number','add_to_cart_order'])
@@ -100,6 +101,7 @@ def data_for_training(data,max_len):
                                   days_interval]).transpose()
             prod_info = np.concatenate([prod_info,order_dow,order_hour,tz],axis=1).astype(np.float16)
             length = prod_info.shape[0]
+            feature_dim = prod_info.shape[1]
             missing_seq = max_len - length
             if missing_seq > 0:
                 missing_data = np.zeros([missing_seq,prod_info.shape[1]],dtype=np.float16)
@@ -109,13 +111,49 @@ def data_for_training(data,max_len):
     user_prod = np.stack([user_ids,product_ids],axis=1)
     return user_prod,data_dict
 
+def product_dataloader(inp,
+                       data_dict,
+                       prod_data,
+                       batch_size=32,
+                       shuffle=True,
+                       drop_last=True
+                       ):
+    def batch_gen():
+        total_len = inp.shape[0]
+        index = np.arange(total_len)
+        if shuffle:
+            np.random.shuffle(index)
+        for i in range(0,total_len,batch_size):
+            idx = index[i:i+batch_size]
+            if len(idx) < batch_size and drop_last:
+                break
+            else:
+                yield inp[idx]
+    
+    prod_aisle_dict = prod_data.set_index('product_id')['aisle_id'].to_dict()
+    prod_dep_dict = prod_data.set_index('product_id')['department_id'].to_dict()
+    for batch in batch_gen():
+        full_batch = []
+        batch_lengths = []
+        users,prods,aisles,depts = [],[],[],[]
+        for row in batch:
+            user_id,product_id = row
+            users.append(user_id)
+            prods.append(product_id)
+            aisles.append(prod_aisle_dict[product_id])
+            depts.append(prod_dep_dict[product_id])
+            key = (user_id,product_id)
+            data,length = data_dict[key]
+            full_batch.append(data)
+            batch_lengths.append(length)
+        full_batch = np.stack(full_batch)
+        yield full_batch,batch_lengths,users,prods,aisles,depts
 
-
-
+def trainer(model):
     
 
 if __name__ == '__main__':
-    # import sys
+    import sys
     # try:
     #     data = pd.read_csv('data/orders_info.csv')
     #     z = data.iloc[:10000]
@@ -127,15 +165,23 @@ if __name__ == '__main__':
     with Timer():
         # agg_data = data_processing(z)
         # pre_data = data_for_training(agg_data,max_len=100)
-        # batch_generator = batch_gen(pre_data[0],32,shuffle=True,drop_last=True)
-        dl = product_dataloader(pre_data[0],pre_data[1])
-        for batch,length in dl:
-            print(batch)
+        
+        # max_user = data['user_id'].max()
+        # max_product = products['product_id'].max()
+        # max_aisle = products['aisle_id'].max()
+        # max_dept = products['department_id'].max()
+        # max_index_info = [max_user,max_product,max_aisle,max_dept]
+        # dl = product_dataloader(pre_data[0],pre_data[1],products)
+        model = ProdLSTM(268,64,50,*max_index_info,num_layers=1,batch_first=True,dropout=0.0).to('cuda')
+        for batch,lengths,*aux_info in dl:
+            batch = torch.from_numpy(batch).cuda()
+            input_dim = batch.shape[-1] + 4 * 50
+            aux_info = [torch.Tensor(b).long().to('cuda') for b in aux_info]
+            output = model(batch,lengths,*aux_info)
             break
 
 
 
 #%%
-
-
+pre_data[1]
 
