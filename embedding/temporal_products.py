@@ -11,6 +11,7 @@ from utils import Timer,logger
 from itertools import chain
 from sklearn.preprocessing import OneHotEncoder
 from sklearn.model_selection import train_test_split
+from torch.utils.data import Dataset,DataLoader
 
 def data_processing(data):
     data = data.sort_values(['user_id','order_number','add_to_cart_order'])
@@ -108,9 +109,38 @@ def data_for_training(data,max_len):
     user_prod = np.stack([user_ids,product_ids],axis=1)
     return user_prod,data_dict
 
-def data_loader(data,prod_data,max_len,train_size=0.8,seed=8617):
-    user_prod,prod_dict = data_for_training(data,max_len)
-    train_data,val_data = train_test_split(user_prod,train_size=train_size,random_state=seed)
+# class ProductDataset(Dataset):
+#     def __int__(self,
+#                 data_len,
+#                 data_dict):
+#         self.data_dict = data_dict
+#         self.data_len = data_len
+        
+#     def __getitem__(self,key):
+#         data= self.data_dict[key]
+    
+#     def __len__(self):
+#         return self.data_len
+
+def batch_gen(inp,
+              batch_size,
+              shuffle=True,
+              drop_last=False):
+    total_len = inp.shape[0]
+    index = np.arange(inp.shape[0])
+    if shuffle:
+        np.random.shuffle(index)
+    for i in range(0,total_len,batch_size):
+        idx = index[i:i+batch_size]
+        if len(idx) < batch_size and drop_last:
+            break
+        else:
+            yield inp[idx]
+
+def product_dataloader(batch_gen,
+                       data_dict
+                       ):
+    
     
 
 if __name__ == '__main__':
@@ -125,7 +155,8 @@ if __name__ == '__main__':
         
     with Timer():
         # agg_data = data_processing(z)
-        pre_data = data_for_training(agg_data,max_len=100)
+        # pre_data = data_for_training(agg_data,max_len=100)
+        pass
 
 
 
@@ -140,7 +171,10 @@ if __name__ == '__main__':
 # oh.fit_transform(pre_data[:,9].reshape(-1,1)).dtype
 # x = pre_data[1,196]
 # products[['product_id','aisle_id']].to_dict()
-x = pre_data[0]
+# x = pre_data[0]
+for batch in batch_gen(x,32,drop_last=False):
+    print(batch)
+    
 
 
 
