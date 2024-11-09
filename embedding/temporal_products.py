@@ -7,7 +7,7 @@ Created on Thu Nov  7 19:42:30 2024
 import warnings
 import numpy as np
 import pandas as pd
-from utils import Timer,logger
+from utils import Timer,logger,product_dataloader
 from itertools import chain
 from sklearn.preprocessing import OneHotEncoder
 from sklearn.model_selection import train_test_split
@@ -109,42 +109,13 @@ def data_for_training(data,max_len):
     user_prod = np.stack([user_ids,product_ids],axis=1)
     return user_prod,data_dict
 
-# class ProductDataset(Dataset):
-#     def __int__(self,
-#                 data_len,
-#                 data_dict):
-#         self.data_dict = data_dict
-#         self.data_len = data_len
-        
-#     def __getitem__(self,key):
-#         data= self.data_dict[key]
-    
-#     def __len__(self):
-#         return self.data_len
 
-def batch_gen(inp,
-              batch_size,
-              shuffle=True,
-              drop_last=False):
-    total_len = inp.shape[0]
-    index = np.arange(inp.shape[0])
-    if shuffle:
-        np.random.shuffle(index)
-    for i in range(0,total_len,batch_size):
-        idx = index[i:i+batch_size]
-        if len(idx) < batch_size and drop_last:
-            break
-        else:
-            yield inp[idx]
 
-def product_dataloader(batch_gen,
-                       data_dict
-                       ):
-    
+
     
 
 if __name__ == '__main__':
-    import sys
+    # import sys
     # try:
     #     data = pd.read_csv('data/orders_info.csv')
     #     z = data.iloc[:10000]
@@ -156,25 +127,15 @@ if __name__ == '__main__':
     with Timer():
         # agg_data = data_processing(z)
         # pre_data = data_for_training(agg_data,max_len=100)
-        pass
+        # batch_generator = batch_gen(pre_data[0],32,shuffle=True,drop_last=True)
+        dl = product_dataloader(pre_data[0],pre_data[1])
+        for batch,length in dl:
+            print(batch)
+            break
 
 
 
 #%%
-# data = pd.read_csv('data/orders_info.csv')
-# z = data.iloc[:100000]
-# x = agg_data.loc[0,'product_id']
-# '35951' in [list(set(chain.from_iterable(product.split('_') for product in x)))][0]
-# x = pre_data
-# from sklearn.preprocessing import OneHotEncoder
-# oh = OneHotEncoder(categories=[np.arange(0,28)],sparse=False)
-# oh.fit_transform(pre_data[:,9].reshape(-1,1)).dtype
-# x = pre_data[1,196]
-# products[['product_id','aisle_id']].to_dict()
-# x = pre_data[0]
-for batch in batch_gen(x,32,drop_last=False):
-    print(batch)
-    
 
 
 
