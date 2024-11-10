@@ -8,7 +8,9 @@ import torch
 import warnings
 import numpy as np
 import pandas as pd
-from utils import Timer,logger
+from torch import optim
+from tqdm import tqdm
+from utils import Timer,logger,SeqLogLoss
 from itertools import chain
 from nn_model.lstm import ProdLSTM
 from sklearn.preprocessing import OneHotEncoder
@@ -46,7 +48,7 @@ def oh_encoding(target,num_cates):
 
 def data_for_training(data,max_len):
     data_dict = {}
-    user_ids,product_ids = [],[]
+    info = []
     for _,row in data.iterrows():
         user,products = row['user_id'],row['product_id']
         reorders = row['reordered']
@@ -57,12 +59,9 @@ def data_for_training(data,max_len):
         reorders = [list(map(int,reorder.split('_'))) for reorder in reorders]
         all_products = [list(set(chain.from_iterable(product.split('_') for product in products)))][0]
         
-        labels = []
         for product in all_products:
-            user_ids.append(user)
-            product_ids.append(int(product))
             label = product in next_products
-            labels.append(label)
+            info.append([user,int(product),label])
             
             reorder_cnt = 0
             in_order_ord = []
@@ -92,6 +91,8 @@ def data_for_training(data,max_len):
                 reorder_ord.append(reorder_size)
                 reorder_ratio_ord.append(reorder_ratio)
             
+            next_order_label = np.roll(in_order_ord,-1).reshape(-1,1)
+            
             order_dow = oh_encoding(np.roll(convert_format(row['order_dow']),-1)[:-1],7)
             order_hour = oh_encoding(np.roll(convert_format(row['order_hour_of_day']),-1)[:-1],24)
             days_interval = np.roll(convert_format(row['days_since_prior_order']),-1)[:-1]
@@ -99,21 +100,23 @@ def data_for_training(data,max_len):
             prod_info = np.stack([in_order_ord,order_size_ord,index_ord,index_ratio_ord,
                                   reorder_prod_ord,reorder_prod_ratio_ord,reorder_ord,reorder_ratio_ord,
                                   days_interval]).transpose()
-            prod_info = np.concatenate([prod_info,order_dow,order_hour,tz],axis=1).astype(np.float16)
+            prod_info = np.concatenate([prod_info,order_dow,order_hour,tz,next_order_label],axis=1).astype(np.float16)
             length = prod_info.shape[0]
-            feature_dim = prod_info.shape[1]
+            feature_dim = prod_info.shape[-1] - 1
             missing_seq = max_len - length
             if missing_seq > 0:
                 missing_data = np.zeros([missing_seq,prod_info.shape[1]],dtype=np.float16)
                 prod_info = np.concatenate([prod_info,missing_data])
             
             data_dict[(user,int(product))] = (prod_info,length)
-    user_prod = np.stack([user_ids,product_ids],axis=1)
-    return user_prod,data_dict
+
+    user_prod = np.stack(info)
+    return user_prod,data_dict,feature_dim
 
 def product_dataloader(inp,
                        data_dict,
-                       prod_data,
+                       prod_aisle_dict,
+                       prod_dept_dict,
                        batch_size=32,
                        shuffle=True,
                        drop_last=True
@@ -130,27 +133,81 @@ def product_dataloader(inp,
             else:
                 yield inp[idx]
     
-    prod_aisle_dict = prod_data.set_index('product_id')['aisle_id'].to_dict()
-    prod_dep_dict = prod_data.set_index('product_id')['department_id'].to_dict()
     for batch in batch_gen():
         full_batch = []
         batch_lengths = []
+        labels = []
         users,prods,aisles,depts = [],[],[],[]
         for row in batch:
-            user_id,product_id = row
+            user_id,product_id,label = row
             users.append(user_id)
             prods.append(product_id)
+            labels.append(label)
             aisles.append(prod_aisle_dict[product_id])
-            depts.append(prod_dep_dict[product_id])
+            depts.append(prod_dept_dict[product_id])
             key = (user_id,product_id)
             data,length = data_dict[key]
             full_batch.append(data)
             batch_lengths.append(length)
         full_batch = np.stack(full_batch)
-        yield full_batch,batch_lengths,users,prods,aisles,depts
+        yield full_batch,batch_lengths,labels,users,prods,aisles,depts
 
-def trainer(model):
+def trainer(data,
+            prod_data,
+            output_dim,
+            emb_dim,
+            loss_fn,
+            learning_rate=0.01,
+            train_size=0.8,
+            batch_size=32,
+            dropout=0.0,
+            seed=18330,
+            optim_option='adam'):
+    optimizer_ = optim_option.lower()
+    if optimizer_ == 'sgd':
+        optimizer = optim.SGD
+    elif optimizer_ == 'adam':
+        optimizer = optim.Adam
+    elif optimizer_ == 'adamw':
+        optimizer = optim.AdamW
+    else:
+        logger.warning(f'{optimizer_} is an invalid option for optimizer')
+        sys.exit(1)
     
+    emb_list = ['user_id','product_id','aisle_id','department_id']
+    max_len = 100
+    agg_data = data_processing(data)
+    data_tr = data_for_training(agg_data,max_len)
+    user_prod,prod_feat_dict,feat_dim = data_tr
+    up_tr,up_te = train_test_split(user_prod,train_size=train_size,random_state=seed)
+    max_index_info = [data[col].max() for col in emb_list] + [100]
+    prod_aisle_dict = prod_data.set_index('product_id')['aisle_id'].to_dict()
+    prod_dept_dict = prod_data.set_index('product_id')['department_id'].to_dict()
+    train_dl = product_dataloader(up_tr,prod_feat_dict,prod_aisle_dict,prod_dept_dict,batch_size,True,True)
+    train_batch_loader = tqdm(train_dl,total=up_tr.shape[0],desc='training next order basket')
+    
+    input_dim = feat_dim + len(emb_list) * emb_dim
+    model = ProdLSTM(input_dim,output_dim,emb_dim,*max_index_info,1,True,dropout).to('cuda')
+    optimizer = optimizer(model.parameters(),lr=learning_rate)
+    model.train()
+    
+    total_loss,cur_iter = 0,1
+    for batch,batch_lengths,next_basket_label,*aux_info in train_batch_loader:
+        batch,label = batch[:,:,:-1],batch[:,:,-1]
+        label = torch.from_numpy(label).to('cuda')
+        batch = torch.from_numpy(batch).cuda()
+        aux_info = [torch.Tensor(b).long().to('cuda') for b in aux_info]
+        preds = model(batch,batch_lengths,*aux_info)
+        
+        loss = loss_fn(preds,label,batch_lengths)
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        
+        total_loss += loss.item()
+        cur_loss = total_loss / cur_iter
+        cur_iter += 1
+        train_batch_loader.set_postfix(loss=f'{cur_loss:.0f}')
 
 if __name__ == '__main__':
     import sys
@@ -165,23 +222,20 @@ if __name__ == '__main__':
     with Timer():
         # agg_data = data_processing(z)
         # pre_data = data_for_training(agg_data,max_len=100)
-        
-        # max_user = data['user_id'].max()
-        # max_product = products['product_id'].max()
-        # max_aisle = products['aisle_id'].max()
-        # max_dept = products['department_id'].max()
-        # max_index_info = [max_user,max_product,max_aisle,max_dept]
-        # dl = product_dataloader(pre_data[0],pre_data[1],products)
-        model = ProdLSTM(268,64,50,*max_index_info,num_layers=1,batch_first=True,dropout=0.0).to('cuda')
-        for batch,lengths,*aux_info in dl:
-            batch = torch.from_numpy(batch).cuda()
-            input_dim = batch.shape[-1] + 4 * 50
-            aux_info = [torch.Tensor(b).long().to('cuda') for b in aux_info]
-            output = model(batch,lengths,*aux_info)
-            break
+        loss_fn = SeqLogLoss(eps=1e-7)
+        trainer(z,
+                products,
+                100,
+                50,
+                loss_fn,
+                train_size=0.8,
+                batch_size=32,
+                dropout=0.0,
+                seed=18330,
+                optim_option='adam')
 
 
 
 #%%
-pre_data[1]
+data['order_number'].max()
 

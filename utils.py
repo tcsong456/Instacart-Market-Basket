@@ -11,6 +11,7 @@ import warnings
 import numpy as np
 import pandas as pd
 from time import time
+from torch import nn
 from torch.nn import functional as F
 from pandas.api.types import is_integer_dtype,is_float_dtype
 
@@ -83,6 +84,22 @@ def split_time_zone(hour):
 #     label = torch.stack(ohs,dim=0)
 #     return label
 
+class SeqLogLoss(nn.Module):
+    def __init__(self,
+                 eps=1e-7):
+        super().__init__()
+        self.eps = eps
+        
+    def forward(self,y_pred,y_true,lengths):
+        y_pred = torch.sigmoid(y_pred)
+        logloss = y_true * torch.log(y_pred + self.eps) + (1 - y_true) * torch.log(1 - y_pred + self.eps)
+        mask = torch.zeros(y_true.shape).cuda()
+        for idx,length in enumerate(lengths):
+            mask[idx,:length] = 1
+        total = sum(lengths)
+        loss = -(logloss * mask).sum() / total
+        return loss
+
 class Timer:
     def __init__(self):
         self.message = 'timer starts'
@@ -97,5 +114,7 @@ class Timer:
         print(f'it took {elapsed:.0f} seconds to complete')
 
 #%%
+# x = torch.rand(32,10)
+# torch.zeros(x.shape)
 
 
