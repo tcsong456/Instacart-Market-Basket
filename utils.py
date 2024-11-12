@@ -84,6 +84,11 @@ def split_time_zone(hour):
 #     label = torch.stack(ohs,dim=0)
 #     return label
 
+def pad(inp,max_len):
+    padded_len = max_len - inp.shape[0]
+    inp = list(inp) + [0] * padded_len
+    return inp
+
 class SeqLogLoss(nn.Module):
     def __init__(self,
                  eps=1e-7):
@@ -95,14 +100,16 @@ class SeqLogLoss(nn.Module):
         logloss = y_true * torch.log(y_pred + self.eps) + (1 - y_true) * torch.log(1 - y_pred + self.eps)
         mask = torch.zeros(y_true.shape).cuda()
         for idx,length in enumerate(lengths):
-            mask[idx,:length] = 1
-        total = sum(lengths)
+            mask[idx,:length-1] = 1
+        total = sum(lengths) - len(lengths)
         loss = -(logloss * mask).sum() / total
         return loss
 
 class Timer:
-    def __init__(self):
+    def __init__(self,
+                 precision):
         self.message = 'timer starts'
+        self.precision = precision
         
     def __enter__(self):
         print(self.message)
@@ -111,10 +118,9 @@ class Timer:
     def __exit__(self,exc_type, exc_val, exc_tb):
         end = time()
         elapsed = end - self.start
-        print(f'it took {elapsed:.0f} seconds to complete')
+        print(f'it took {elapsed:.{self.precision}f} seconds to complete')
 
 #%%
-# x = torch.rand(32,10)
-# torch.zeros(x.shape)
+
 
 

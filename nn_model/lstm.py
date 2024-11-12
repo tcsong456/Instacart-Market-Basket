@@ -6,7 +6,10 @@ Created on Sat Nov  9 16:36:46 2024
 """
 import torch
 from torch import nn
+from torch.nn import functional as F
 import torch.nn.utils.rnn as rnn_utils
+
+convert_to_tensor = lambda x:torch.Tensor(x).to('cuda')
 
 class ProdLSTM(nn.Module):
     def __init__(self,
@@ -37,12 +40,22 @@ class ProdLSTM(nn.Module):
         self.h = nn.Linear(output_dim,hidden_dim)
         self.final = nn.Linear(hidden_dim,1)
     
-    def forward(self,inputs,lengths,users,products,aisles,depts):
-        user_embedding = torch.stack([self.user_embedding(user-1).repeat(self.max_len,1) for user in users])
-        product_embedding = torch.stack([self.product_embedding(prod-1).repeat(self.max_len,1) for prod in products])
-        aisle_embedding = torch.stack([self.aisle_embedding(aisle-1).repeat(self.max_len,1) for aisle in aisles])
-        dept_embedding = torch.stack([self.dept_embedding(dept-1).repeat(self.max_len,1) for dept in depts])
-        inputs = torch.cat([inputs,user_embedding,product_embedding,aisle_embedding,dept_embedding],dim=-1)
+    def forward(self,inputs,lengths,users,products,aisles,depts,dows,hours,tzs):
+        batch,seq_len,_ = inputs.shape
+
+        oh_tzs = F.one_hot(tzs,num_classes=28)
+        oh_dows = F.one_hot(dows,num_classes=7)
+        oh_hours = F.one_hot(hours,num_classes=24)
+        tmp = torch.cat([oh_dows,oh_hours,oh_tzs],dim=-1)
+
+        user_embedding = self.user_embedding(users)
+        product_embedding = self.product_embedding(products)
+        aisle_embedding = self.aisle_embedding(aisles)
+        dept_embedding = self.dept_embedding(depts)
+        embedding = torch.cat([user_embedding,product_embedding,aisle_embedding,dept_embedding],dim=-1)
+        embedding = embedding.repeat(1,self.max_len).reshape(batch,self.max_len,-1)
+        inputs[:,:,-1] = inputs[:,:,-1] / 30
+        inputs = torch.cat([inputs,tmp,embedding],dim=-1)
         
         packed_inputs = rnn_utils.pack_padded_sequence(inputs,lengths,batch_first=True,enforce_sorted=False)
         packed_outputs,_ = self.lstm(packed_inputs)
@@ -59,4 +72,3 @@ class ProdLSTM(nn.Module):
 
 
 #%%
-
