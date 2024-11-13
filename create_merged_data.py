@@ -4,12 +4,16 @@ Created on Thu Nov  7 18:09:19 2024
 
 @author: congx
 """
+import os
+import sys
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 import numpy as np
 import pandas as pd
 from sklearn.preprocessing import LabelEncoder
-from utils import load_data,optimize_dtypes,split_time_zone
+from utils.utils import load_data,optimize_dtypes,split_time_zone,logger
 from pandas.api.types import is_float_dtype
 
+logger.info('creating the all merged order data')
 week_days_map = {0:'Mon',
                  1:'Tue',
                  2:'Wed',
@@ -28,7 +32,7 @@ order_products = pd.concat([orders_prior,orders_train])
 del orders_prior,orders_train 
 orders = orders.merge(order_products,how='left',on='order_id').merge(products,\
           how='left',on='product_id').merge(aisles,how='left',on='aisle_id').merge(departments,how='left',on='department_id')
-orders = orders[orders['eval_set']!='test']
+orders.fillna(-1,inplace=True)
 del order_products
 
 orders['order_dow_text'] = orders['order_dow'].map(week_days_map)

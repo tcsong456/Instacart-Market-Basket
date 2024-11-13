@@ -5,6 +5,7 @@ Created on Sat Nov  9 16:36:46 2024
 @author: congx
 """
 import torch
+import numpy as np
 from torch import nn
 from torch.nn import functional as F
 import torch.nn.utils.rnn as rnn_utils
@@ -21,24 +22,21 @@ class ProdLSTM(nn.Module):
                 max_aisles,
                 max_depts,
                 max_len,
-                num_layers=1,
-                batch_first=True,
-                dropout=0.0):
+                model='train',
+                batch_first=True):
         super().__init__()
         self.lstm = nn.LSTM(input_dim,
                             output_dim,
-                            batch_first=batch_first,
-                            num_layers=num_layers,
-                            dropout=dropout)
+                            batch_first=batch_first)
         self.user_embedding = nn.Embedding(max_users,emb_dim)
         self.product_embedding = nn.Embedding(max_products,emb_dim)
         self.aisle_embedding = nn.Embedding(max_aisles,emb_dim)
         self.dept_embedding = nn.Embedding(max_depts,emb_dim)
         self.max_len = max_len
         
-        hidden_dim = output_dim // 2
-        self.h = nn.Linear(output_dim,hidden_dim)
-        self.final = nn.Linear(hidden_dim,1)
+        # hidden_dim = output_dim // 2
+        # self.h = nn.Linear(output_dim,hidden_dim)
+        self.final = nn.Linear(output_dim,1)
     
     def forward(self,inputs,lengths,users,products,aisles,depts,dows,hours,tzs):
         batch,seq_len,_ = inputs.shape
@@ -60,15 +58,14 @@ class ProdLSTM(nn.Module):
         packed_inputs = rnn_utils.pack_padded_sequence(inputs,lengths,batch_first=True,enforce_sorted=False)
         packed_outputs,_ = self.lstm(packed_inputs)
         outputs,_ = rnn_utils.pad_packed_sequence(packed_outputs,batch_first=True)
-        h = self.h(outputs)
-        final_results = self.final(h).squeeze()
-        batch_len,max_seq = final_results.shape
-        if max_seq < self.max_len:
-            padded_length = self.max_len - max_seq
-            padded_zeros = torch.zeros(batch_len,padded_length).to('cuda')
-            final_results = torch.cat([final_results,padded_zeros],dim=1)
+        # h = self.h(outputs)
+        final_results = self.final(outputs).squeeze()
         return final_results
         
 
 
 #%%
+
+
+
+

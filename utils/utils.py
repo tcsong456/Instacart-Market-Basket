@@ -5,14 +5,11 @@ Created on Sat Oct 26 12:16:05 2024
 @author: congx
 """
 import os
-import torch
 import logging
 import warnings
 import numpy as np
 import pandas as pd
 from time import time
-from torch import nn
-from torch.nn import functional as F
 from pandas.api.types import is_integer_dtype,is_float_dtype
 
 def optimize_dtypes(df):
@@ -40,18 +37,19 @@ def load_data(path):
     data_dict = {}
     data_list = os.listdir(path)
     for dt in data_list:
-        d_path = os.path.join(path,dt)
-        d = pd.read_csv(d_path)
-        d_name = dt[:dt.find('.')]
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
-            for col in d.columns:
-                num_nulls = pd.isnull(d[col]).sum()
-                if num_nulls > 0:
-                    d[col].fillna(-1,inplace=True)
-                    logger.warning('the column {} of {} dataset has {} number of null values'.format(col,d_name,num_nulls))
-        data = optimize_dtypes(d)
-        data_dict[d_name] = data
+        if dt.endswith('.csv'):
+            d_path = os.path.join(path,dt)
+            d = pd.read_csv(d_path)
+            d_name = dt[:dt.find('.')]
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                for col in d.columns:
+                    num_nulls = pd.isnull(d[col]).sum()
+                    if num_nulls > 0:
+                        d[col].fillna(-1,inplace=True)
+                        logger.warning('the column {} of {} dataset has {} number of null values'.format(col,d_name,num_nulls))
+            data = optimize_dtypes(d)
+            data_dict[d_name] = data
     return data_dict
 
 def _setup_logger():
@@ -86,28 +84,13 @@ def split_time_zone(hour):
 
 def pad(inp,max_len):
     padded_len = max_len - inp.shape[0]
-    inp = list(inp) + [0] * padded_len
+    # inp = list(inp) + [0] * padded_len
+    inp = np.concatenate([inp,np.zeros(padded_len)])
     return inp
-
-class SeqLogLoss(nn.Module):
-    def __init__(self,
-                 eps=1e-7):
-        super().__init__()
-        self.eps = eps
-        
-    def forward(self,y_pred,y_true,lengths):
-        y_pred = torch.sigmoid(y_pred)
-        logloss = y_true * torch.log(y_pred + self.eps) + (1 - y_true) * torch.log(1 - y_pred + self.eps)
-        mask = torch.zeros(y_true.shape).cuda()
-        for idx,length in enumerate(lengths):
-            mask[idx,:length-1] = 1
-        total = sum(lengths) - len(lengths)
-        loss = -(logloss * mask).sum() / total
-        return loss
 
 class Timer:
     def __init__(self,
-                 precision):
+                 precision=0):
         self.message = 'timer starts'
         self.precision = precision
         
