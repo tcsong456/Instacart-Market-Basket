@@ -204,7 +204,7 @@ def product_dataloader(inp,
         temporals = [dows,hours,tzs]
         yield full_batch,batch_lengths,labels,temporals,users-1,prods-1,aisles-1,depts-1
 
-get_checkpoint_path = lambda model_name,seed:f'{model_name}_best_checkpoint_{seed}'
+get_checkpoint_path = lambda model_name:f'{model_name}_best_checkpoint'
 def trainer(data,
             prod_data,
             output_dim,
@@ -245,8 +245,8 @@ def trainer(data,
         for i in range(len(value)):
             value[i] = torch.Tensor(value[i]).long().cuda()
         temporal_dict[key] = value
-    
-    up_tr,up_val = train_test_split(user_prod,train_size=train_size,random_state=seed)
+    #random_state=seed
+    up_tr,up_val = train_test_split(user_prod,train_size=train_size)
     max_index_info = [data[col].max() for col in emb_list] + [max_len]
     
     temp_dim = sum([data[t].max()+1 for t in temp_list])
@@ -254,13 +254,12 @@ def trainer(data,
     model = ProdLSTM(input_dim,output_dim,emb_dim,*max_index_info,True).to('cuda')
     model_name = model.__class__.__name__
     optimizer = optimizer(model.parameters(),lr=learning_rate)
-    lr_scheduler = optim.lr_scheduler.OneCycleLR(optimizer,max_lr=0.1,steps_per_epoch=up_tr.shape[0]//batch_size,
-                                                     epochs=10)
+    lr_scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer,mode='min',patience=0,factor=0.2,verbose=True)
     
     loss_fn_tr = SeqLogLoss(eps=1e-7)
     loss_fn_te = NextBasketLoss(eps=1e-7)
     
-    checkpoint_path = get_checkpoint_path(model_name,seed)
+    checkpoint_path = get_checkpoint_path(model_name)
     checkpoint_path = f'checkpoint/{checkpoint_path}'
     if warm_start:
         checkpoint = torch.load(checkpoint_path)
@@ -276,7 +275,6 @@ def trainer(data,
     no_improvement = 0
     for epoch in range(start_epoch,epochs):
         total_loss,cur_iter = 0,1
-        # total_ref_loss = 0
         model.train()
         train_dl = product_dataloader(up_tr,max_len,prod_feat_dict,temporal_dict,batch_size,True,True)
         train_batch_loader = tqdm(train_dl,total=up_tr.shape[0]//batch_size,desc=f'training next order basket at epoch:{epoch}',
@@ -303,11 +301,6 @@ def trainer(data,
                 loss = loss_fn_tr(preds,label,batch_lengths)
                 loss.backward()
                 optimizer.step()
-            
-            # next_basket_label = torch.from_numpy(next_basket_label).cuda()
-            # ref_loss = loss_fn_te(preds,next_basket_label,batch_lengths)
-            # total_ref_loss += ref_loss
-            # avg_ref_loss = total_ref_loss / cur_iter
 
             cur_loss = loss.item()
             total_loss += cur_loss
@@ -315,13 +308,12 @@ def trainer(data,
                 
             cur_iter += 1
             train_batch_loader.set_postfix(train_loss=f'{avg_loss:.05f}')
-            lr_scheduler.step()
         
         if epoch % eval_epoch == 0:
             model.eval()
             total_loss_val,ite = 0,1
-            eval_dl = product_dataloader(up_val,max_len,prod_feat_dict,temporal_dict,128,False,False)
-            eval_batch_loader = tqdm(eval_dl,total=up_val.shape[0]//128,desc='evaluating next order basket',
+            eval_dl = product_dataloader(up_val,max_len,prod_feat_dict,temporal_dict,1024,False,False)
+            eval_batch_loader = tqdm(eval_dl,total=up_val.shape[0]//1024,desc='evaluating next order basket',
                                      leave=False,dynamic_ncols=True)
             
             with torch.no_grad():
@@ -338,8 +330,9 @@ def trainer(data,
                     total_loss_val += loss.item()
                     avg_loss_val = total_loss_val / ite
                     ite += 1
-                
                     eval_batch_loader.set_postfix(eval_loss=f'{avg_loss_val:.05f}')
+            lr_scheduler.step(avg_loss_val)
+            
             if avg_loss_val < best_loss:
                 best_loss = avg_loss_val
                 checkpoint = {'best_epoch':epoch,
@@ -353,7 +346,7 @@ def trainer(data,
                 no_improvement += 1
                 
             if no_improvement == early_stopping:
-                logger.info('early stopping is trggered,the model has stopped improving for 3 consecutive epochs')
+                logger.info('early stopping is trggered,the model has stopped improving')
                 return agg_data,input_dim,max_len,prod_aisle_dict,prod_dept_dict,max_index_info,checkpoint_path
     return agg_data,input_dim,max_len,prod_aisle_dict,prod_dept_dict,max_index_info,checkpoint_path
                 
@@ -380,8 +373,8 @@ def predict(
     checkpoint = torch.load(checkpoint_path)
     model.load_state_dict(checkpoint['model_state_dict'])
     
-    test_dl = product_dataloader(user_prod,max_len,prod_feat_dict,temporal_dict,128,False,False)
-    test_batch_loader = tqdm(test_dl,total=user_prod.shape[0]//128,desc='predicting next reorder basket',
+    test_dl = product_dataloader(user_prod,max_len,prod_feat_dict,temporal_dict,1024,False,False)
+    test_batch_loader = tqdm(test_dl,total=user_prod.shape[0]//1024,desc='predicting next reorder basket',
                              leave=False,dynamic_ncols=True)
     predictions = []
     with torch.no_grad():
@@ -401,9 +394,11 @@ def predict(
             user_product_prob  = np.concatenate([user_product,probs],axis=1)
             predictions.append(user_product_prob)
     
-    predictions = np.concatenate(predictions)
+    predictions = np.concatenate(predictions).astype(np.float32)
     os.makedirs('metadata',exist_ok=True)
-    np.save('metadata/user_product_prob.npy',predictions)
+    pred_path = 'metadata/user_product_prob.npy'
+    np.save(pred_path,predictions)
+    logger.info(f'predictions saved to {pred_path}')
     return predictions
 
 if __name__ == '__main__':
@@ -421,13 +416,13 @@ if __name__ == '__main__':
                     eval_epoch=1,
                     epochs=100,
                     save_data=False,
-                    learning_rate=0.005,
-                    train_size=0.8,
+                    learning_rate=0.01,
+                    train_size=0.75,
                     batch_size=512,
                     seed=18330,
-                    early_stopping=3,
+                    early_stopping=2,
                     use_amp=False,
-                    warm_start=True,
+                    warm_start=False,
                     optim_option='adam')
     predict(*outputs,
             output_dim=100,
@@ -487,6 +482,7 @@ if __name__ == '__main__':
 #     for _ in range(1000):
 #         np.hstack([x,np.zeros(100)])
 # z = user_prod[:10000]
+# z = np.load('metadata/user_product_prob.npy')
 
 #%%
 # with Timer(precision=3):
@@ -502,4 +498,4 @@ if __name__ == '__main__':
 #         cnt += 1
 
         #%%
-# z = np.load('metadata/user_product_prob.npy')
+
