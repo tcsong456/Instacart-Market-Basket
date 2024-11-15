@@ -14,7 +14,7 @@ import numpy as np
 import pandas as pd
 from torch import optim
 from tqdm import tqdm
-from nn_model.lstm import ProdLSTM
+from nn_model.lstm import ProdLSTM,ProdWavnet
 from utils.utils import Timer,logger,pad
 from torch.cuda.amp import autocast,GradScaler
 from utils.loss import NextBasketLoss,SeqLogLoss
@@ -204,7 +204,7 @@ def product_dataloader(inp,
         temporals = [dows,hours,tzs]
         yield full_batch,batch_lengths,labels,temporals,users-1,prods-1,aisles-1,depts-1
 
-get_checkpoint_path = lambda model_name:f'{model_name}_best_checkpoint'
+get_checkpoint_path = lambda model_name:f'{model_name}_best_checkpoint.pth'
 def trainer(data,
             prod_data,
             output_dim,
@@ -251,7 +251,8 @@ def trainer(data,
     
     temp_dim = sum([data[t].max()+1 for t in temp_list])
     input_dim = feat_dim + len(emb_list) * emb_dim + temp_dim
-    model = ProdLSTM(input_dim,output_dim,emb_dim,*max_index_info,True).to('cuda')
+    # model = ProdLSTM(input_dim,output_dim,emb_dim,*max_index_info).to('cuda')
+    model = ProdWavnet(emb_dim,*max_index_info,input_dim,32,32,kernel_sizes=[2]*4,dilations=[2**i for i in range(4)]).to('cuda')
     model_name = model.__class__.__name__
     optimizer = optimizer(model.parameters(),lr=learning_rate)
     lr_scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer,mode='min',patience=0,factor=0.2,verbose=True)
@@ -421,7 +422,7 @@ if __name__ == '__main__':
                     batch_size=512,
                     seed=18330,
                     early_stopping=2,
-                    use_amp=False,
+                    use_amp=True,
                     warm_start=False,
                     optim_option='adam')
     predict(*outputs,
