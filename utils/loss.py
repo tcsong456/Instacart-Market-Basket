@@ -14,8 +14,6 @@ class SeqLogLoss(nn.Module):
         self.eps = eps
         
     def forward(self,y_pred,y_true,lengths):
-        max_len = max(lengths)
-        y_true = y_true[:,:max_len]
         y_pred = torch.sigmoid(y_pred)
         logloss = y_true * torch.log(y_pred + self.eps) + (1 - y_true) * torch.log(1 - y_pred + self.eps)
         mask = torch.zeros(y_true.shape).cuda()

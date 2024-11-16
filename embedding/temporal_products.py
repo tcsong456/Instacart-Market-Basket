@@ -14,7 +14,7 @@ import numpy as np
 import pandas as pd
 from torch import optim
 from tqdm import tqdm
-from nn_model.lstm import ProdLSTM,ProdWavnet
+from nn_model.lstm import ProdLSTM,ProdWavnet,TemporalNet
 from utils.utils import Timer,logger,pad
 from torch.cuda.amp import autocast,GradScaler
 from utils.loss import NextBasketLoss,SeqLogLoss
@@ -69,6 +69,7 @@ def pickle_save_load(path,data=None,mode='save'):
         raise KeyError(f'{mode} is invalid mode')
 
 convert_index_cuda = lambda x:torch.from_numpy(x).long().cuda()
+standardscaler = lambda x:(x-np.mean(x)) / np.var(x)
 
 def model_data(data,max_len,prod_aisle_dict,prod_dept_dict,mode='train'):
     
@@ -148,9 +149,9 @@ def model_data(data,max_len,prod_aisle_dict,prod_dept_dict,mode='train'):
                 temporal_info_dict[user] = [b for b in temporal_info]
                 
                 days_interval = np.roll(row['days_since_prior_order'],-1)[:lagging]
-                prod_info = np.stack([in_order_ord,order_size_ord,index_ord,index_ratio_ord,
-                                      reorder_prod_ord,reorder_prod_ratio_ord,reorder_ord,reorder_ratio_ord,
-                                      days_interval]).transpose()
+                prod_info = np.stack([in_order_ord,np.array(order_size_ord)/145,np.array(index_ord)/145,index_ratio_ord,
+                                      np.array(reorder_prod_ord)/100,reorder_prod_ratio_ord,np.array(reorder_ord)/130,reorder_ratio_ord,
+                                      days_interval/30]).transpose()
                 prod_info = np.concatenate([prod_info,next_order_label],axis=1).astype(np.float16)
                 length = prod_info.shape[0]
                 feature_dim = prod_info.shape[-1] - 1
@@ -166,7 +167,7 @@ def model_data(data,max_len,prod_aisle_dict,prod_dept_dict,mode='train'):
     save_data  = [user_prod,temporal_info_dict,data_dict]
     for path,file in zip(save_path,save_data):
         path = os.path.join(TMP_PATH,path)
-        pickle_save_load(path,file,mode='save')
+        pickle_save_load(path,file,mode='save') 	
     
     return user_prod,data_dict,temporal_info_dict,feature_dim
 
@@ -215,7 +216,6 @@ def trainer(data,
             learning_rate=0.01,
             train_size=0.8,
             batch_size=32,
-            seed=18330,
             early_stopping=5,
             use_amp=True,
             warm_start=False,
@@ -245,14 +245,17 @@ def trainer(data,
         for i in range(len(value)):
             value[i] = torch.Tensor(value[i]).long().cuda()
         temporal_dict[key] = value
-    #random_state=seed
+
     up_tr,up_val = train_test_split(user_prod,train_size=train_size)
     max_index_info = [data[col].max() for col in emb_list] + [max_len]
     
     temp_dim = sum([data[t].max()+1 for t in temp_list])
     input_dim = feat_dim + len(emb_list) * emb_dim + temp_dim
-    # model = ProdLSTM(input_dim,output_dim,emb_dim,*max_index_info).to('cuda')
-    model = ProdWavnet(emb_dim,*max_index_info,input_dim,32,32,kernel_sizes=[2]*4,dilations=[2**i for i in range(4)]).to('cuda')
+    model = ProdLSTM(input_dim,output_dim,emb_dim,*max_index_info).to('cuda')
+    # model = ProdWavnet(emb_dim,*max_index_info,input_dim,32,32,kernel_sizes=[2]*4,
+    #                    dilations=[2**i for i in range(4)]).to('cuda')
+    # model = TemporalNet(input_dim,output_dim,emb_dim,*max_index_info,32,32,kernel_sizes=[2]*4,
+    #                     dilations=[2**i for i in range(4)]).to('cuda')
     model_name = model.__class__.__name__
     optimizer = optimizer(model.parameters(),lr=learning_rate)
     lr_scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer,mode='min',patience=0,factor=0.2,verbose=True)
@@ -292,7 +295,7 @@ def trainer(data,
             if use_amp:
                 scaler = GradScaler()
                 with autocast():
-                    preds = model(batch,batch_lengths,*aux_info,*temps)
+                    preds = model(batch,*aux_info,*temps)
                     loss = loss_fn_tr(preds,label,batch_lengths)
                 scaler.scale(loss).backward()
                 scaler.step(optimizer)
@@ -325,7 +328,7 @@ def trainer(data,
                     temps = [torch.stack(temp) for temp in temps]
                     aux_info = [convert_index_cuda(b) for b in aux_info]
                     
-                    preds = model(batch,batch_lengths,*aux_info,*temps)
+                    preds = model(batch,*aux_info,*temps)
                     loss = loss_fn_te(preds,next_basket_label,batch_lengths)
                     
                     total_loss_val += loss.item()
@@ -420,9 +423,8 @@ if __name__ == '__main__':
                     learning_rate=0.01,
                     train_size=0.75,
                     batch_size=512,
-                    seed=18330,
                     early_stopping=2,
-                    use_amp=True,
+                    use_amp=False,
                     warm_start=False,
                     optim_option='adam')
     predict(*outputs,
@@ -462,41 +464,4 @@ if __name__ == '__main__':
 
 
 #%%
-# import  numpy as np
-# import pickle
-# from utils import Timer
-# from torch import nn
-# import torch
-# from torch.nn import functional as F
-# from operator import itemgetter
-# with open('data/tmp/user_prod.pkl','rb') as f:
-#     user_prod = pickle.load(f)
-
-
-# x = torch.rand(100,32).to('cuda')
-# with open('data/tmp/try.pkl','rb') as f:
-    # pickle.dump(x,f)
-    # x = pickle.load(f)
-# x = np.array([1,2,3,4,5])
-
-# with Timer(8):
-#     for _ in range(1000):
-#         np.hstack([x,np.zeros(100)])
-# z = user_prod[:10000]
-# z = np.load('metadata/user_product_prob.npy')
-
-#%%
-# with Timer(precision=3):
-#     cnt = 0
-#     for batch,batch_lengths,next_basket_label,temps,*aux_info in product_dataloader(user_prod,100,data_dict,temp_dict,512,True,True):
-#         batch,label = batch[:,:,:-1],batch[:,:,-1]
-#         label = torch.from_numpy(label).to('cuda')
-#         batch = torch.from_numpy(batch).cuda()
-#         temps = [torch.stack(temp) for temp in temps]
-#         aux_info = [convert_index_cuda(b) for b in aux_info]
-#         if cnt == 100:
-#             break
-#         cnt += 1
-
-        #%%
 
