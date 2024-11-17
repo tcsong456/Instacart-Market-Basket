@@ -462,6 +462,7 @@ if __name__ == '__main__':
 
 #%%
 # import pickle
+# import torch
 # up_tr,up_val = train_test_split(user_prod,train_size=train_size)
 # up_val,prod_feat_dict_val,temporal_dict_val,_ = make_data(agg_data_te,max_len,prod_aisle_dict,prod_dept_dict,1,mode='eval')
 # user_prod,prod_feat_dict,temporal_dict,feat_dim = data_tr
