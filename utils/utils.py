@@ -5,6 +5,7 @@ Created on Sat Oct 26 12:16:05 2024
 @author: congx
 """
 import os
+import pickle
 import logging
 import warnings
 import numpy as np
@@ -72,19 +73,20 @@ def split_time_zone(hour):
     else:
         return 'midnight'
     
-# def get_label(dts,num_classes):
-#     ohs = []
-#     for dt in dts:
-#         dt = torch.tensor(dt)
-#         oh = F.one_hot(dt,num_classes=num_classes)
-#         oh_basket,_ = torch.max(oh,dim=0)
-#         ohs.append(oh_basket)
-#     label = torch.stack(ohs,dim=0)
-#     return label
+def pickle_save_load(path,data=None,mode='save'):
+    if mode == 'save':
+        assert data is not None,'data must be provided when it is in save mode'
+        with open(path,'wb') as f:
+            pickle.dump(data,f)
+    elif mode == 'load':
+        with open(path,'rb') as f:
+            data = pickle.load(f)
+        return data
+    else:
+        raise KeyError(f'{mode} is invalid mode')
 
 def pad(inp,max_len):
     padded_len = max_len - inp.shape[0]
-    # inp = list(inp) + [0] * padded_len
     inp = np.concatenate([inp,np.zeros(padded_len)])
     return inp
 
