@@ -116,65 +116,6 @@ class TemporalNet(ProdLSTM):
         preds = self.final(final_results).squeeze()
         return preds
 
-#%%
-# from utils.utils import Timer
-# import torch.profiler as profiler
-
-# inputs = torch.rand(32,100,9).cuda()
-# lengths = list(np.random.randint(2,81,(32,)))
-# users = torch.randint(1,200000,(32,)).cuda()
-# products = torch.randint(1,45000,(32,)).cuda()
-# aisles = torch.randint(1,50,(32,)).cuda()
-# depts = torch.randint(1,20,(32,)).cuda()
-# dows = torch.randint(0,7,(32,100)).cuda()
-# hours = torch.randint(0,24,(32,100)).cuda()
-# tzs = torch.randint(0,28,(32,100)).cuda()
-# temp_model = TemporalNet(input_dim=268,
-#                     output_dim=100,
-#                     emb_dim=50,
-#                     max_users=200000,
-#                     max_products=50000,
-#                     max_aisles=50,
-#                     max_depts=20,
-#                     max_len=100,
-#                     skip_channels=32,
-#                     residual_channels=32,
-#                     kernel_sizes=[2]*4,
-#                     dilations=[2**i for i in range(4)]).cuda()
-# lstm_model = ProdLSTM(input_dim=268,
-#                     output_dim=100,
-#                     emb_dim=50,
-#                     max_users=200000,
-#                     max_products=50000,
-#                     max_aisles=50,
-#                     max_depts=20,
-#                     max_len=100).cuda()
-# wavent_model = ProdWavnet(emb_dim=50,
-#                         max_users=200000,
-#                         max_products=50000,
-#                         max_aisles=50,
-#                         max_depts=20,
-#                         max_len=100,
-#                         in_channels=268,
-#                         skip_channels=32,
-#                         residual_channels=32,
-#                         kernel_sizes=[2]*4,
-#                         dilations=[2**i for i in range(4)]).cuda()
-# with Timer(5):
-#     # for _ in range(20):
-#         # x = wavent_model(inputs,lengths,users,products,aisles,depts,dows,hours,tzs)
-#         # y = lstm_model(inputs,lengths,users,products,aisles,depts,dows,hours,tzs)
-#     with profiler.profile(
-#                         activities=[
-#                             profiler.ProfilerActivity.CPU,  # Profile CPU activities
-#                             profiler.ProfilerActivity.CUDA  # Profile GPU activities
-#                         ],
-#                     ) as prof:
-#         # y = lstm_model(inputs,lengths,users,products,aisles,depts,dows,hours,tzs)
-#         w = temp_model(inputs,lengths,users,products,aisles,depts,dows,hours,tzs)
-#         # x = wavent_model(inputs,lengths,users,products,aisles,depts,dows,hours,tzs)
-#     print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=10))
-
 
 #%%
 

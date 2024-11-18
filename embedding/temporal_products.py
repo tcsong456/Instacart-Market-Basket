@@ -21,40 +21,7 @@ from torch.cuda.amp import autocast,GradScaler
 from utils.loss import NextBasketLoss,SeqLogLoss
 from itertools import chain
 from sklearn.model_selection import train_test_split
-
-TMP_PATH = 'data/tmp'
-
-def data_processing(data,save=False):
-    os.makedirs(TMP_PATH,exist_ok=True)
-    path = os.path.join(TMP_PATH,'user_product_info.csv')
-    try:
-        r = pd.read_pickle(path)
-    except FileNotFoundError:
-        logger.info('building user data')
-        data = data.sort_values(['user_id','order_number','add_to_cart_order'])
-        grouped_data = []
-        
-        for col in ['product_id','reordered','aisle_id','department_id']:
-            x = data.groupby(['user_id','order_id','order_number'])[col].apply(list).map(lambda x:'_'.join(map(str,x))).reset_index()
-            x = x.sort_values(['user_id','order_number']).groupby(['user_id'])[col].apply(list)
-            grouped_data.append(x)
-        r = pd.concat(grouped_data,axis=1)
-        
-        grouped_attr = []
-        for col in ['order_hour_of_day','order_dow','days_since_prior_order','time_zone']:
-            x = data.groupby(['user_id','order_id','order_number']).apply(lambda x:x[col].iloc[0])
-            x.name = col
-            x = x.reset_index().sort_values(['user_id','order_number']).groupby('user_id')[col].apply(list)
-            grouped_attr.append(x)
-        x = pd.concat(grouped_attr,axis=1)
-        
-        z = data.groupby('user_id').apply(lambda x:x['eval_set'].iloc[-1])
-        z.name = 'eval_set'
-        
-        r = r.merge(x,how='left',on='user_id').merge(z,how='left',on='user_id').reset_index()
-        if save:
-            r.to_pickle(path)
-    return r
+from create_merged_data import data_processing
 
 convert_index_cuda = lambda x:torch.from_numpy(x).long().cuda()
 

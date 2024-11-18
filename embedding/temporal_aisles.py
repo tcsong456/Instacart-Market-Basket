@@ -9,6 +9,7 @@ import pandas as pd
 from tqdm import tqdm
 from itertools import chain
 from utils.utils import pad
+from create_merged_data import data_processing
 
 def make_data(data,max_len,mode='train'):
     user_aisle = []
@@ -35,8 +36,8 @@ def make_data(data,max_len,mode='train'):
         all_aisles = list(set(chain.from_iterable([aisle.split('_') for aisle in aisles])))
         
         for aisle in all_aisles:
-            label = aisle in next_aisles
-            label_cnt = sum([1 for ele in next_aisles if ele==aisle])
+            label = -1 if mode == 'test' else aisle in next_aisles 
+            label_cnt = -1 if mode == 'test' else sum([1 for ele in next_aisles if ele==aisle])
             user_aisle.append([user_id,int(aisle)])
             
             order_sizes_ord = []
@@ -52,6 +53,7 @@ def make_data(data,max_len,mode='train'):
             cnt_ord = []
             cnt_ratio_ord = []
             cumsum_cnt_ratio_ord = []
+            cumsum_cnt_total_ratio_ord = []
             cumsum_inorder,total_cnts,total_cnts_log,total_sizes = 0,0,0,0
             seen_aisles = set()
             for idx,order_aisle in enumerate(orders):
@@ -89,11 +91,11 @@ def make_data(data,max_len,mode='train'):
                 cnt_ord.append(cur_cnt)
                 cnt_ratio_ord.append(cur_cnt_ratio)
                 cumsum_cnt_ratio_ord.append(cumsum_cnt_ratio)
-                cumsum_inorder_ratio_ord.append(cumsum_cnt_total_ratio)
+                cumsum_cnt_total_ratio_ord.append(cumsum_cnt_total_ratio)
             
-            next_in_order = np.roll(in_order,-1)
+            next_in_order = np.roll(in_order_ord,-1)
             next_in_order[-1] = label
-            next_order_size = np.log1p(np.roll(cur_cnt,-1))
+            next_order_size = np.log1p(np.roll(cnt_ord,-1))
             next_order_size[-1] = np.log1p(label_cnt)
             
             aisle_info = np.stack([in_order_ord,np.array(index_order_ord)/145,index_order_ratio_ord,np.array(avg_index_ord)/100,
@@ -106,37 +108,38 @@ def make_data(data,max_len,mode='train'):
             aisle_info = np.concatenate([aisle_info,paddings])
             
             aisle_cnt_info = np.stack([np.array(order_sizes_ord)/145,np.log1p(cnt_ord),cnt_ratio_ord,cumsum_cnt_ratio_ord,
-                                       cumsum_inorder_ratio_ord,next_order_size],axis=1).astype(np.float16)
+                                       cumsum_cnt_total_ratio_ord,next_order_size],axis=1).astype(np.float16)
             aisle_cnt_dim = aisle_cnt_info.shape[1] - 1
             length = aisle_cnt_info.shape[0]
             padded_len = max_len - length
             paddings = np.zeros([padded_len,aisle_cnt_dim+1],dtype=np.float16)
             aisle_cnt_info = np.concatenate([aisle_cnt_info,paddings])
             
-            data_dict[user_id] = (aisle_info,aisle_info_dim,aisle_cnt_info,aisle_cnt_dim)
+            data_dict[(user_id,int(aisle))] = (aisle_info,aisle_info_dim,aisle_cnt_info,aisle_cnt_dim)
     user_aisle = np.array(user_aisle)
     
     return user_aisle,data_dict,temporal_dict
 
 if __name__ == '__main__':
-    data = pd.read_csv('data/orders_info.csv')
+    # data = pd.read_csv('data/orders_info.csv')
     
     np.random.seed(9999)
     TEST_LENGTH = 7000000
     start_index = np.random.randint(0,data.shape[0]-TEST_LENGTH)
     end_index = start_index + TEST_LENGTH
     
-    data = data.iloc[start_index:end_index]
-    z = make_data(data,100,mode='train')
+    data_ = data.iloc[start_index:end_index]
+    agg_data = data_processing(data_,save=False)
+    z = make_data(agg_data,100,mode='train')
     
 
 #%%
-import torch
+# import torch
 # import pandas as pd
-import numpy as np
+# import numpy as np
 # data = pd.read_pickle('data/tmp/user_product_info.csv')
 # z = data.iloc[:1000]
 # # checkpoint = torch.load('checkpoint/ProdLSTM_best_checkpoint.pth')
 # # orders = pd.read_csv('data/orders_info.csv')
-np.random.seed(342894823)
-np.random.randint(0,2000,1)[0]
+# np.stack([[1,2,3],np.array([4,5,6])],axis=1)
+z[]
