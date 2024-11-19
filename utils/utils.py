@@ -13,6 +13,8 @@ import pandas as pd
 from time import time
 from pandas.api.types import is_integer_dtype,is_float_dtype
 
+TMP_PATH = 'data/tmp'
+
 def optimize_dtypes(df):
     for col in df.columns:
         col_data = df[col]

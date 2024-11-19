@@ -16,7 +16,7 @@ import pandas as pd
 from torch import optim
 from tqdm import tqdm
 from nn_model.lstm import ProdLSTM
-from utils.utils import Timer,logger,pad,pickle_save_load
+from utils.utils import Timer,logger,pad,pickle_save_load,TMP_PATH
 from torch.cuda.amp import autocast,GradScaler
 from utils.loss import NextBasketLoss,SeqLogLoss
 from itertools import chain
@@ -428,16 +428,7 @@ if __name__ == '__main__':
 
 
 #%%
-# import pickle
-# import torch
-# up_tr,up_val = train_test_split(user_prod,train_size=train_size)
-# up_val,prod_feat_dict_val,temporal_dict_val,_ = make_data(agg_data_te,max_len,prod_aisle_dict,prod_dept_dict,1,mode='eval')
-# user_prod,prod_feat_dict,temporal_dict,feat_dim = data_tr
-# dicts = [temporal_dict_tr,temporal_dict_val]
-# model = ProdWavnet(emb_dim,*max_index_info,input_dim,32,32,kernel_sizes=[2]*4,
-#                    dilations=[2**i for i in range(4)]).to('cuda')
-# model = TemporalNet(input_dim,output_dim,emb_dim,*max_index_info,32,32,kernel_sizes=[2]*4,
-#                     dilations=[2**i for i in range(4)]).to('cuda')
-# with open('data/tmp/data_dict_train_1.pkl','rb') as f:
-#     data_dict = pickle.load(f)
-# checkpoint = torch.load('checkpoint/ProdLSTM_best_checkpoint.pth')
+np.random.seed(9999)
+TEST_LENGTH = 7000000
+start_index = np.random.randint(0,data.shape[0]-TEST_LENGTH)
+start_index

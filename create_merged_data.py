@@ -9,6 +9,7 @@ import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 import numpy as np
 import pandas as pd
+from utils.utils import TMP_PATH
 from sklearn.preprocessing import LabelEncoder
 from utils.utils import load_data,optimize_dtypes,split_time_zone,logger
 from pandas.api.types import is_float_dtype
@@ -49,9 +50,9 @@ def create_orders_info(path):
     orders = optimize_dtypes(orders)
     
     orders.to_csv('data/orders_info.csv',index=False)
+    
 
 def data_processing(data,save=False):
-    TMP_PATH = 'data/tmp'
     os.makedirs(TMP_PATH,exist_ok=True)
     path = os.path.join(TMP_PATH,'user_product_info.csv')
     # try:

@@ -29,7 +29,7 @@ def make_data(data,max_len,mode='train'):
         order_hour = pad(np.roll(order_hour,-1)[:-1],max_len)
         order_tz = pad(np.roll(order_tz,-1)[:-1],max_len)
         order_days = np.roll(order_days,-1)[:-1]
-        temporal_dict[user_id] = [order_dow,order_hour,order_tz]
+        temporal_dict[user_id] = [order_dow.astype(np.int8),order_hour.astype(np.int8),order_tz.astype(np.int8)]
         
         aisles,next_aisles = aisles[:-1],aisles[-1]
         orders = [aisle.split('_') for aisle in aisles]
@@ -120,8 +120,39 @@ def make_data(data,max_len,mode='train'):
     
     return user_aisle,data_dict,temporal_dict
 
+def aisle_dataloader(inp,
+                     data_dict,
+                     temp_dict,
+                     batch_size=32,
+                     shuffle=True,
+                     drop_last=False):
+    def batch_gen():
+        total_length = inp.shape[0]
+        indices = np.arange(total_length)
+        if shuffle:
+            np.random.shuffle(indices)
+        for i in range(0,total_length,batch_size):
+            ind = indices[i:i+batch_size]
+            if len(ind) < batch_size and drop_last:
+                break
+            else:
+                batch = inp[ind]
+                yield batch
+    
+    for batch in batch_gen():
+        split_outputs = np.split(batch,batch.shape[1],axis=1)
+        users,aisles = list(map(np.squeeze,split_outputs))
+        dows,hours,tzs = zip(*list(map(temp_dict.get,users)))
+        keys = np.split(batch,batch.shape[0],axis=0)
+        keys = list(map(tuple,(map(np.squeeze,keys))))
+        data_inorder,inorder_len,data_cnt,cnt_len = zip(*list(map(data_dict.get,keys)))
+        full_batch_inorder,full_batch_cnt = np.stack(data_inorder),np.stack(data_cnt)
+        inorder_len,cnt_len = list(inorder_len),list(cnt_len)
+        temporals = [dows,hours,tzs]
+        yield full_batch_inorder,inorder_len,full_batch_cnt,cnt_len,temporals,users-1,aisles-1
+
 if __name__ == '__main__':
-    # data = pd.read_csv('data/orders_info.csv')
+    data = pd.read_csv('data/orders_info.csv')
     
     np.random.seed(9999)
     TEST_LENGTH = 7000000
@@ -142,4 +173,7 @@ if __name__ == '__main__':
 # # checkpoint = torch.load('checkpoint/ProdLSTM_best_checkpoint.pth')
 # # orders = pd.read_csv('data/orders_info.csv')
 # np.stack([[1,2,3],np.array([4,5,6])],axis=1)
-z[]
+dl = aisle_dataloader(z[0],z[1],z[2])
+for batch in dl:
+    break
+#%%
