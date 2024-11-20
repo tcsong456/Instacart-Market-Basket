@@ -4,6 +4,7 @@ Created on Sat Oct 26 12:16:05 2024
 
 @author: congx
 """
+import torch
 import os
 import pickle
 import logging
@@ -89,7 +90,9 @@ def pickle_save_load(path,data=None,mode='save'):
 
 def pad(inp,max_len):
     padded_len = max_len - inp.shape[0]
-    inp = np.concatenate([inp,np.zeros(padded_len)])
+    # inp = np.concatenate([inp,np.zeros(padded_len)])
+    inp = torch.Tensor(inp) if type(inp)!=torch.Tensor else inp
+    inp = torch.cat([inp,torch.zeros(padded_len)])
     return inp
 
 class Timer:
@@ -108,6 +111,4 @@ class Timer:
         print(f'it took {elapsed:.{self.precision}f} seconds to complete')
 
 #%%
-
-
 
