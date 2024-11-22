@@ -15,51 +15,63 @@ import numpy as np
 import pandas as pd
 from torch import optim
 from tqdm import tqdm
-from nn_model.lstm import ProdLSTM
+from nn_model.product_lstm import ProdLSTM,ProdLSTMV1
 from utils.utils import Timer,logger,pad,pickle_save_load,TMP_PATH
 from torch.cuda.amp import autocast,GradScaler
 from utils.loss import NextBasketLoss,SeqLogLoss
 from itertools import chain
 from sklearn.model_selection import train_test_split
 from create_merged_data import data_processing
+from embedding.trainer import Trainer
 
 convert_index_cuda = lambda x:torch.from_numpy(x).long().cuda()
 
-def make_data(data,max_len,prod_aisle_dict,prod_dept_dict,mode='train'):
+def product_data_maker(data,max_len,prod_aisle_dict,prod_dept_dict,mode='train'):
     suffix = mode + '.pkl'
-    save_path = [path+'_'+suffix for path in ['user_prod','temporal_dict','data_dict']]
+    save_path = [path+'_'+suffix for path in ['user_prod','product_data_dict','temporal_dict']]
     check_files = np.all([os.path.exists(os.path.join(TMP_PATH,file)) for file in save_path])
+    temp_dict = pickle_save_load(os.path.join(TMP_PATH,f'temporal_dict_{suffix}'),mode='load')
     if check_files:
         logger.info('loading temporary data')
-        data_dict = pickle_save_load(os.path.join(TMP_PATH,f'data_dict_{suffix}'),mode='load')
+        data_dict = pickle_save_load(os.path.join(TMP_PATH,f'product_data_dict_{suffix}'),mode='load')
         keys = list(data_dict.keys())
         rand_index = np.random.randint(0,len(keys),1)[0]
         rand_key = keys[rand_index]
         feature_dim = data_dict[rand_key][0].shape[-1] - 1
         user_product = pickle_save_load(os.path.join(TMP_PATH,f'user_prod_{suffix}'),mode='load')
-        temp_data = pickle_save_load(os.path.join(TMP_PATH,f'temporal_dict_{suffix}'),mode='load')
-        return user_product,data_dict,temp_data,feature_dim
+        return user_product,data_dict,temp_dict,feature_dim
         
     base_info = []
-    data_dict,temporal_info_dict = {},{}
+    data_dict = {}
+    temp_dict = {}
     with tqdm(total=data.shape[0],desc='building product data for dataloader',dynamic_ncols=True,
               leave=False) as pbar:
         for _,row in data.iterrows():
             user,products = row['user_id'],row['product_id']
             reorders = row['reordered']
             temporal_cols = [row['order_dow'],row['order_hour_of_day'],row['time_zone'],row['days_since_prior_order']]
+            # days_interval = row['days_since_prior_order']
             if row['eval_set'] == 'test' and mode != 'test':
                 products = products[:-1]
+                reorders = reorders[:-1]
+                # days_interval = days_interval[:-1]
                 for idx,col_data in enumerate(temporal_cols):
                     col_data = col_data[:-1]
                     temporal_cols[idx] = col_data
-            order_dow,order_hour,order_tz,order_days = temporal_cols
+            order_dow,order_hour,order_tz,days_interval = temporal_cols
+            order_dow = pad(np.roll(order_dow,-1)[:-1],max_len)
+            order_hour = pad(np.roll(order_hour,-1)[:-1],max_len)
+            order_tz = pad(np.roll(order_tz,-1)[:-1],max_len)
+            days_interval = np.roll(days_interval,-1)[:-1]
+            temp_dict[user] = [order_dow,order_hour,order_tz]
+            
             products,next_products = products[:-1],products[-1]
+            next_products = next_products.split('_')
             orders = [product.split('_') for product in products]
-            reorders_ = reorders[:-1]
+            reorders_,next_reorders = reorders[:-1],reorders[-1]
             
             reorders_ = [list(map(int,reorder.split('_'))) for reorder in reorders_]
-            all_products = [list(set(chain.from_iterable(product.split('_') for product in products)))][0]
+            all_products = list(set(chain.from_iterable([product.split('_') for product in products])))
             
             for product in all_products:
                 label = -1 if mode == 'test' else product in next_products
@@ -68,7 +80,6 @@ def make_data(data,max_len,prod_aisle_dict,prod_dept_dict,mode='train'):
                 base_info.append([user,int(product),aisle,dept])
                 
                 reorder_cnt = 0
-                total_reorders,total_sizes = 0,0
                 in_order_ord = []
                 index_ord = []
                 index_ratio_ord = []
@@ -77,8 +88,6 @@ def make_data(data,max_len,prod_aisle_dict,prod_dept_dict,mode='train'):
                 order_size_ord = []
                 reorder_ord = []
                 reorder_ratio_ord = []
-                all_reorder_ratio_ord = []
-                reorder_basket_ord = []
                 for idx,(order,reorder) in enumerate(zip(orders,reorders_)):
                     in_order = int(product in order)
                     index_in_order = order.index(product) + 1 if in_order else 0
@@ -88,10 +97,6 @@ def make_data(data,max_len,prod_aisle_dict,prod_dept_dict,mode='train'):
                     reorder_ratio_cum = reorder_cnt / (idx+1)
                     reorder_size = sum(reorder)
                     reorder_ratio = reorder_size / order_size
-                    total_reorders += reorder_size
-                    total_sizes += order_size
-                    reorder_tendency = total_reorders / total_sizes
-                    reorder_by_basket = total_reorders / (idx + 1)
                     
                     in_order_ord.append(in_order)
                     order_size_ord.append(order_size)
@@ -101,22 +106,13 @@ def make_data(data,max_len,prod_aisle_dict,prod_dept_dict,mode='train'):
                     reorder_prod_ratio_ord.append(reorder_ratio_cum)
                     reorder_ord.append(reorder_size)
                     reorder_ratio_ord.append(reorder_ratio)
-                    all_reorder_ratio_ord.append(reorder_tendency)
-                    reorder_basket_ord.append(reorder_by_basket)
                 
                 next_order_label = np.roll(in_order_ord,-1).reshape(-1,1)
                 next_order_label[-1] = label
                 
-                order_dow = pad(np.roll(order_dow,-1)[:-1],max_len)
-                order_hour = pad(np.roll(order_hour,-1)[:-1],max_len)
-                tz = pad(np.roll(order_tz,-1)[:-1],max_len)
-                temporal_info = [order_dow,order_hour,tz]
-                temporal_info_dict[user] = [b for b in temporal_info]
-                
-                days_interval = np.roll(order_days,-1)[:-1]
                 prod_info = np.stack([in_order_ord,np.array(order_size_ord)/145,np.array(index_ord)/145,index_ratio_ord,
                                       np.array(reorder_prod_ord)/100,reorder_prod_ratio_ord,np.array(reorder_ord)/130,reorder_ratio_ord,
-                                      all_reorder_ratio_ord,reorder_basket_ord,days_interval/30]).transpose()
+                                      days_interval/30]).transpose()
                 prod_info = np.concatenate([prod_info,next_order_label],axis=1).astype(np.float16)
                 length = prod_info.shape[0]
                 feature_dim = prod_info.shape[-1] - 1
@@ -124,21 +120,64 @@ def make_data(data,max_len,prod_aisle_dict,prod_dept_dict,mode='train'):
                 if missing_seq > 0:
                     missing_data = np.zeros([missing_seq,prod_info.shape[1]],dtype=np.float16)
                     prod_info = np.concatenate([prod_info,missing_data])
-                
                 data_dict[(user,int(product))] = (prod_info,length)
+            
+            base_info.append([user,0,0,0])
+            reorder_cnt = 0
+            in_order_ord = []
+            index_ord = []
+            index_ratio_ord = []
+            reorder_prod_ord = []
+            reorder_prod_ratio_ord = []
+            order_size_ord = []
+            reorder_ord = []
+            reorder_ratio_ord = []
+            next_reorders = list(map(int,next_reorders.split('_')))
+            for idx,(order,reorder) in enumerate(zip(orders,reorders_)):
+                in_order = int(max(reorder) == 0)
+                index_in_order = 0
+                order_size = len(order)
+                index_order_ratio = 0
+                reorder_cnt += in_order
+                reorder_ratio_cum = reorder_cnt / (idx+1)
+                reorder_size = sum(reorder)
+                reorder_ratio = reorder_size / order_size
+                
+                in_order_ord.append(in_order)
+                order_size_ord.append(order_size)
+                index_ord.append(index_in_order)
+                index_ratio_ord.append(index_order_ratio)
+                reorder_prod_ord.append(reorder_cnt)
+                reorder_prod_ratio_ord.append(reorder_ratio_cum)
+                reorder_ord.append(reorder_size)
+                reorder_ratio_ord.append(reorder_ratio)
+            
+            next_order_label = np.roll(in_order_ord,-1).reshape(-1,1)
+            next_order_label[-1] = int(max(next_reorders)==0)
+            prod_info = np.stack([in_order_ord,np.array(order_size_ord)/145,np.array(index_ord)/145,index_ratio_ord,
+                                  np.array(reorder_prod_ord)/100,reorder_prod_ratio_ord,np.array(reorder_ord)/130,reorder_ratio_ord,
+                                  days_interval/30]).transpose()
+            prod_info = np.concatenate([prod_info,next_order_label],axis=1).astype(np.float16)
+            length = prod_info.shape[0]
+            feature_dim = prod_info.shape[-1] - 1
+            missing_seq = max_len - length
+            if missing_seq > 0:
+                missing_data = np.zeros([missing_seq,prod_info.shape[1]],dtype=np.float16)
+                prod_info = np.concatenate([prod_info,missing_data])
+            data_dict[(user,0)] = (prod_info,length)
+            
             pbar.update(1)
     user_prod = np.stack(base_info)
     
-    save_data  = [user_prod,temporal_info_dict,data_dict]
+    save_data  = [user_prod,data_dict,temp_dict]
     for path,file in zip(save_path,save_data):
         path = os.path.join(TMP_PATH,path)
         pickle_save_load(path,file,mode='save') 	
     
-    return user_prod,data_dict,temporal_info_dict,feature_dim
+    return user_prod,data_dict,temp_dict,feature_dim
 
 
 def product_dataloader(inp,
-                       max_len,
                        data_dict,
                        temp_dict,
                        batch_size=32,
@@ -168,232 +207,206 @@ def product_dataloader(inp,
         full_batch = np.stack(data)
         batch_lengths = list(length)
         temporals = [dows,hours,tzs]
-        yield full_batch,batch_lengths,temporals,users-1,prods-1,aisles-1,depts-1
+        yield full_batch,batch_lengths,temporals,users-1,prods,aisles,depts
 
-get_checkpoint_path = lambda model_name:f'{model_name}_best_checkpoint.pth'
-def trainer(data,
-            prod_data,
-            output_dim,
-            emb_dim,
-            eval_epoch=3,
-            epochs=100,
-            save_data=True,
-            learning_rate=0.01,
-            lagging=1,
-            batch_size=32,
-            early_stopping=5,
-            use_amp=True,
-            warm_start=False,
-            scheduler_option='reduce',
-            optim_option='adam'):
-    optimizer_ = optim_option.lower()
-    if optimizer_ == 'sgd':
-        optimizer = optim.SGD
-    elif optimizer_ == 'adam':
-        optimizer = optim.Adam
-    elif optimizer_ == 'adamw':
-        optimizer = optim.AdamW
-    else:
-        logger.warning(f'{optimizer_} is an invalid option for optimizer')
-        sys.exit(1)
+class ProductTrainer(Trainer):
+    def __init__(self,
+                  data,
+                  prod_data,
+                  output_dim,
+                  learning_rate=0.01,
+                  lagging=1,
+                  optim_option='adam',
+                  batch_size=32,
+                  warm_start=False,
+                  early_stopping=3,
+                  epochs=100,
+                  eval_epoch=1):
+        super().__init__(data=data,
+                         prod_data=prod_data,
+                         output_dim=output_dim,
+                         learning_rate=learning_rate,
+                         lagging=lagging,
+                         optim_option=optim_option,
+                         batch_size=batch_size,
+                         warm_start=warm_start,
+                         early_stopping=early_stopping,
+                         epochs=epochs,
+                         eval_epoch=eval_epoch)
+        self.dataloader = product_dataloader
+        self.model = ProdLSTM
+        self.data_maker = product_data_maker
+        self.emb_list = ['user_id','product_id','aisle_id','department_id']
+        self.max_index_info = [data[col].max()+1 for col in self.emb_list] + [self.max_len]
+        self.prod_aisle_dict = self.prod_data.set_index('product_id')['aisle_id'].to_dict()
+        self.prod_dept_dict = self.prod_data.set_index('product_id')['department_id'].to_dict()
     
-    max_len = data['order_number'].max()
-    temp_list = ['order_dow','order_hour_of_day','time_zone']
-    emb_list = ['user_id','product_id','aisle_id','department_id']
-    prod_aisle_dict = prod_data.set_index('product_id')['aisle_id'].to_dict()
-    prod_dept_dict = prod_data.set_index('product_id')['department_id'].to_dict()
+    def build_data_dl(self,mode):
+        agg_data = self.build_agg_data('product_id')
+        data_group = self.data_maker(agg_data,self.max_len,self.prod_aisle_dict,self.prod_dept_dict,mode=mode)
+        user_prod,data_dict,temp_dict,prod_dim = data_group
+        for key,value in temp_dict.items():
+            for i in range(len(value)):
+                value[i] = torch.Tensor(value[i]).long().cuda()
+            temp_dict[key] = value
+        self.input_dim = self.temp_dim + prod_dim + len(self.emb_list) * 50
+        self.agg_data = agg_data
+        return [user_prod,data_dict,temp_dict],prod_dim
     
-    agg_data = data_processing(data,save=save_data)
-    agg_data_tr,agg_data_te = agg_data[agg_data['eval_set']=='train'],agg_data[agg_data['eval_set']=='test']
-    agg_data_tr = agg_data_tr[agg_data_tr['product_id'].map(lambda x:len(x)-lagging>=2)]
-    agg_data_te = agg_data_te[agg_data_te['product_id'].map(lambda x:len(x)-(lagging+1)>=2)]
-    agg_data = pd.concat([agg_data_tr,agg_data_te])
-    del agg_data_tr,agg_data_te
-    gc.collect()
-    user_prod,prod_feat_dict,temporal_dict,feat_dim = make_data(agg_data,max_len,prod_aisle_dict,prod_dept_dict,mode='train')
+    def train(self,use_amp=False,use_extra_params=False):
+        core_info_tr,prod_dim = self.build_data_dl(mode='train')
+        model,optimizer,lr_scheduler,start_epoch,best_loss,checkpoint_path = super().train(use_amp=use_amp)
+        self.checkpoint_path = checkpoint_path
+        
+        if use_extra_params:
+            aisle_param_path = 'data/tmp/user_aisle_param.pkl'
+            aisle_param_dict = pickle_save_load(aisle_param_path,mode='load')
+            emb_list = ['user_id','product_id','department_id']
+            self.input_dim = self.temp_dim + prod_dim + len(emb_list) * 50 + 21
+            max_index_info = [data[col].max() for col in emb_list] + [self.max_len]
+            model = ProdLSTMV1(self.input_dim,self.output_dim,*max_index_info,aisle_param_dict).cuda()
+            optimizer = self.optimizer(model.parameters(),lr=self.learning_rate)
+            lr_scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer,mode='min',patience=0,factor=0.2,verbose=True)
+            
+        no_improvement = 0
+        for epoch in range(start_epoch,self.epochs):
+            total_loss,cur_iter = 0,1
+            model.train()
+            train_dl = self.dataloader(*core_info_tr,self.batch_size,True,True)
+            train_batch_loader = tqdm(train_dl,total=core_info_tr[0].shape[0]//self.batch_size,desc=f'training next product basket at epoch:{epoch}',
+                                      dynamic_ncols=True,leave=False)
+            
+            for batch,batch_lengths,temps,*aux_info in train_batch_loader:
+                batch,label = batch[:,:,:-1],batch[:,:,-1]
+                label = torch.from_numpy(label).to('cuda')
+                batch = torch.from_numpy(batch).cuda()
+                temps = [torch.stack(temp) for temp in temps]
+                aux_info = [convert_index_cuda(b) for b in aux_info]
+                
+                optimizer.zero_grad()
+                if use_amp:
+                    scaler = GradScaler()
+                    with autocast():
+                        preds = model(batch,*temps)
+                        loss = self.loss_fn_tr(preds,label,batch_lengths)
+                    scaler.scale(loss).backward()
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    preds = model(batch,*aux_info,*temps)
+                    loss = self.loss_fn_tr(preds,label,batch_lengths)
+                    loss.backward()
+                    optimizer.step()
 
-    for key,value in temporal_dict.items():
-        for i in range(len(value)):
-            value[i] = torch.Tensor(value[i]).long().cuda()
-        temporal_dict[key] = value
-
-    max_index_info = [data[col].max() for col in emb_list] + [max_len]
-    
-    temp_dim = sum([data[t].max()+1 for t in temp_list])
-    input_dim = feat_dim + len(emb_list) * emb_dim + temp_dim
-    model = ProdLSTM(input_dim,output_dim,emb_dim,*max_index_info).to('cuda')
-
-    model_name = model.__class__.__name__
-    optimizer = optimizer(model.parameters(),lr=learning_rate)
-    lr_scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer,mode='min',patience=0,factor=0.2,verbose=True)
-    
-    loss_fn_tr = SeqLogLoss(lagging=lagging,eps=1e-7)
-    loss_fn_te = NextBasketLoss(lagging=lagging,eps=1e-7)
-    
-    checkpoint_path = get_checkpoint_path(model_name)
-    checkpoint_path = f'checkpoint/{checkpoint_path}'
-    if warm_start:
-        checkpoint = torch.load(checkpoint_path)
+                cur_loss = loss.item()
+                total_loss += cur_loss
+                avg_loss = total_loss / cur_iter
+                    
+                cur_iter += 1
+                train_batch_loader.set_postfix(train_loss=f'{avg_loss:.05f}')
+            
+            if epoch % self.eval_epoch == 0:
+                model.eval()
+                total_loss_val,ite = 0,1
+                eval_dl = self.dataloader(*core_info_tr,1024,False,False)
+                eval_batch_loader = tqdm(eval_dl,total=core_info_tr[0].shape[0]//1024,desc='evaluating next order basket',
+                                          leave=False,dynamic_ncols=True)
+                
+                with torch.no_grad():
+                    for batch,batch_lengths,temps,*aux_info in eval_batch_loader:
+                        batch,label = batch[:,:,:-1],batch[:,:,-1]
+                        batch = torch.from_numpy(batch).cuda()
+                        label = torch.from_numpy(label).to('cuda')
+                        temps = [torch.stack(temp) for temp in temps]
+                        aux_info = [convert_index_cuda(b) for b in aux_info]
+                        
+                        preds = model(batch,*aux_info,*temps)
+                        loss = self.loss_fn_te(preds,label,batch_lengths)
+                        
+                        total_loss_val += loss.item()
+                        avg_loss_val = total_loss_val / ite
+                        ite += 1
+                        eval_batch_loader.set_postfix(eval_loss=f'{avg_loss_val:.05f}')
+                lr_scheduler.step(avg_loss_val)
+                
+                if avg_loss_val < best_loss:
+                    best_loss = avg_loss_val
+                    checkpoint = {'best_epoch':epoch,
+                                  'best_loss':best_loss,
+                                  'model_state_dict':model.state_dict(),
+                                  'optimizer_state_dict':optimizer.state_dict()}
+                    os.makedirs('checkpoint',exist_ok=True)
+                    torch.save(checkpoint,checkpoint_path)
+                    no_improvement = 0
+                else:
+                    no_improvement += 1
+                    
+                if no_improvement == self.early_stopping:
+                    logger.info('early stopping is trggered,the model has stopped improving')
+                    return
+                
+    def predict(self):
+        predict_data = self.agg_data[self.agg_data['eval_set']=='test']
+        data_te = self.data_maker(predict_data,self.max_len,self.prod_aisle_dict,self.prod_dept_dict,mode='test')
+        user_prod,prod_feat_dict,temporal_dict,feat_dim = data_te
+        for key,value in temporal_dict.items():
+            for i in range(len(value)):
+                value[i] = torch.Tensor(value[i]).long().cuda()
+            temporal_dict[key] = value
+        model = self.model(self.input_dim,self.output_dim,*self.max_index_info).to('cuda')
+        checkpoint = torch.load(self.checkpoint_path)
         model.load_state_dict(checkpoint['model_state_dict'])
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        start_epoch = checkpoint['best_epoch']
-        best_loss = checkpoint['best_loss']
-        logger.info(f'warm starting training from best epoch:{start_epoch} and best loss:{best_loss:.5f}')
-    else:
-        start_epoch = 0
-        best_loss = np.inf
-    
-    no_improvement = 0
-    for epoch in range(start_epoch,epochs):
-        total_loss,cur_iter = 0,1
-        model.train()
-        train_dl = product_dataloader(user_prod,max_len,prod_feat_dict,temporal_dict,batch_size,True,True)
-        train_batch_loader = tqdm(train_dl,total=user_prod.shape[0]//batch_size,desc=f'training next order basket at epoch:{epoch}',
-                                  dynamic_ncols=True,leave=False)
         
-        for batch,batch_lengths,temps,*aux_info in train_batch_loader:
-            batch,label = batch[:,:,:-1],batch[:,:,-1]
-            label = torch.from_numpy(label).to('cuda')
-            batch = torch.from_numpy(batch).cuda()
-            temps = [torch.stack(temp) for temp in temps]
-            aux_info = [convert_index_cuda(b) for b in aux_info]
-            
-            optimizer.zero_grad()
-            if use_amp:
-                scaler = GradScaler()
-                with autocast():
-                    preds = model(batch,*aux_info,*temps)
-                    loss = loss_fn_tr(preds,label,batch_lengths)
-                scaler.scale(loss).backward()
-                scaler.step(optimizer)
-                scaler.update()
-            else:
+        test_dl = product_dataloader(user_prod,prod_feat_dict,temporal_dict,1024,False,False)
+        test_batch_loader = tqdm(test_dl,total=user_prod.shape[0]//1024,desc='predicting next reorder basket',
+                                 leave=False,dynamic_ncols=True)
+        predictions = []
+        with torch.no_grad():
+            for batch,batch_lengths,temps,users,prods,aisles,depts in test_batch_loader:
+                batch = batch[:,:,:-1]
+                batch = torch.from_numpy(batch).cuda()
+                temps = [torch.stack(temp) for temp in temps]
+                aux_info = [convert_index_cuda(b) for b in [users,prods,aisles,depts]]
+                
                 preds = model(batch,*aux_info,*temps)
-                loss = loss_fn_tr(preds,label,batch_lengths)
-                loss.backward()
-                optimizer.step()
-
-            cur_loss = loss.item()
-            total_loss += cur_loss
-            avg_loss = total_loss / cur_iter
+                preds = torch.sigmoid(preds).cpu()
+                index = torch.Tensor(batch_lengths).long().reshape(-1,1) - 1
+                probs = torch.gather(preds,dim=1,index=index).numpy()
                 
-            cur_iter += 1
-            train_batch_loader.set_postfix(train_loss=f'{avg_loss:.05f}')
+                users +=1
+                user_product = np.stack([users,prods],axis=1)
+                user_product_prob  = np.concatenate([user_product,probs],axis=1)
+                predictions.append(user_product_prob)
         
-        if epoch % eval_epoch == 0:
-            model.eval()
-            total_loss_val,ite = 0,1
-            eval_dl = product_dataloader(user_prod,max_len,prod_feat_dict,temporal_dict,1024,False,False)
-            eval_batch_loader = tqdm(eval_dl,total=user_prod.shape[0]//1024,desc='evaluating next order basket',
-                                     leave=False,dynamic_ncols=True)
-            
-            with torch.no_grad():
-                for batch,batch_lengths,temps,*aux_info in eval_batch_loader:
-                    batch,label = batch[:,:,:-1],batch[:,:,-1]
-                    batch = torch.from_numpy(batch).cuda()
-                    label = torch.from_numpy(label).to('cuda')
-                    temps = [torch.stack(temp) for temp in temps]
-                    aux_info = [convert_index_cuda(b) for b in aux_info]
-                    
-                    preds = model(batch,*aux_info,*temps)
-                    loss = loss_fn_te(preds,label,batch_lengths)
-                    
-                    total_loss_val += loss.item()
-                    avg_loss_val = total_loss_val / ite
-                    ite += 1
-                    eval_batch_loader.set_postfix(eval_loss=f'{avg_loss_val:.05f}')
-            lr_scheduler.step(avg_loss_val)
-            
-            if avg_loss_val < best_loss:
-                best_loss = avg_loss_val
-                checkpoint = {'best_epoch':epoch,
-                              'best_loss':best_loss,
-                              'model_state_dict':model.state_dict(),
-                              'optimizer_state_dict':optimizer.state_dict()}
-                os.makedirs('checkpoint',exist_ok=True)
-                torch.save(checkpoint,checkpoint_path)
-                no_improvement = 0
-            else:
-                no_improvement += 1
-                
-            if no_improvement == early_stopping:
-                logger.info('early stopping is trggered,the model has stopped improving')
-                return agg_data,input_dim,max_len,prod_aisle_dict,prod_dept_dict,max_index_info,checkpoint_path
-    return agg_data,input_dim,max_len,prod_aisle_dict,prod_dept_dict,max_index_info,checkpoint_path
-                
-def predict(
-            agg_data,
-            input_dim,
-            max_len,
-            aisle_dict,
-            dept_dict,
-            max_index_info,
-            checkpoint_path,
-            output_dim,
-            emb_dim
-            ):
-    predict_data = agg_data[agg_data['eval_set']=='test']
-    data_te = make_data(predict_data,max_len,aisle_dict,dept_dict,mode='test')
-    user_prod,prod_feat_dict,temporal_dict,feat_dim = data_te
-    for key,value in temporal_dict.items():
-        for i in range(len(value)):
-            value[i] = torch.Tensor(value[i]).long().cuda()
-        temporal_dict[key] = value
+        predictions = np.concatenate(predictions).astype(np.float32)
+        os.makedirs('metadata',exist_ok=True)
+        pred_path = 'metadata/user_product_prob.npy'
+        np.save(pred_path,predictions)
+        logger.info(f'predictions saved to {pred_path}')
+        return predictions
 
-    model = ProdLSTM(input_dim,output_dim,emb_dim,*max_index_info).to('cuda')
-    checkpoint = torch.load(checkpoint_path)
-    model.load_state_dict(checkpoint['model_state_dict'])
-    
-    test_dl = product_dataloader(user_prod,max_len,prod_feat_dict,temporal_dict,1024,False,False)
-    test_batch_loader = tqdm(test_dl,total=user_prod.shape[0]//1024,desc='predicting next reorder basket',
-                             leave=False,dynamic_ncols=True)
-    predictions = []
-    with torch.no_grad():
-        for batch,batch_lengths,temps,users,prods,aisles,depts in test_batch_loader:
-            batch = batch[:,:,:-1]
-            batch = torch.from_numpy(batch).cuda()
-            temps = [torch.stack(temp) for temp in temps]
-            aux_info = [convert_index_cuda(b) for b in [users,prods,aisles,depts]]
-            
-            preds = model(batch,*aux_info,*temps)
-            preds = torch.sigmoid(preds).cpu()
-            index = torch.Tensor(batch_lengths).long().reshape(-1,1) - 1
-            probs = torch.gather(preds,dim=1,index=index).numpy()
-            
-            users +=1; prods += 1
-            user_product = np.stack([users,prods],axis=1)
-            user_product_prob  = np.concatenate([user_product,probs],axis=1)
-            predictions.append(user_product_prob)
-    
-    predictions = np.concatenate(predictions).astype(np.float32)
-    os.makedirs('metadata',exist_ok=True)
-    pred_path = 'metadata/user_product_prob.npy'
-    np.save(pred_path,predictions)
-    logger.info(f'predictions saved to {pred_path}')
-    return predictions
 
 if __name__ == '__main__':
     data = pd.read_csv('data/orders_info.csv')
     products = pd.read_csv('data/products.csv')
     # z = data.iloc[1000000:2000000]
         
-    outputs = trainer(data,
-                    products,
-                    output_dim=100,
-                    emb_dim=50,
-                    eval_epoch=1,
-                    epochs=1,
-                    save_data=False,
-                    learning_rate=0.002,
-                    lagging=1,
-                    batch_size=512,
-                    early_stopping=2,
-                    use_amp=False,
-                    warm_start=False,
-                    optim_option='adam')
-    predict(*outputs,
-            output_dim=100,
-            emb_dim=50)
+    product_trainer = ProductTrainer(data,
+                                    products,
+                                    output_dim=100,
+                                    eval_epoch=1,
+                                    epochs=10,
+                                    learning_rate=0.002,
+                                    lagging=1,
+                                    batch_size=512,
+                                    early_stopping=2,
+                                    warm_start=True,
+                                    optim_option='adam')
+    product_trainer.train(use_amp=False,use_extra_params=False)
+    product_trainer.predict()
+    # predict(*outputs,
+    #         output_dim=100,
+    #         emb_dim=50)
     
         
     # from collections import ChainMap
@@ -428,7 +441,15 @@ if __name__ == '__main__':
 
 
 #%%
-np.random.seed(9999)
-TEST_LENGTH = 7000000
-start_index = np.random.randint(0,data.shape[0]-TEST_LENGTH)
-start_index
+# import pandas as  pd
+# import numpy as np
+# import torch
+# import pickle
+# data = pd.read_csv('data/orders_info.csv')
+# z = data.iloc[:100000]
+# gb = z.groupby('order_id')
+# dfs, order_ids = zip(*[(df, key) for key, df in gb])
+# p = np.load('metadata/user_product_prob.npy')
+# checkpoint = torch.load('checkpoint/ProdLSTM_best_checkpoint.pth')
+# with open('data/tmp/user_prod_test.pkl','rb') as f:
+#     user_prod = pickle.load(f)

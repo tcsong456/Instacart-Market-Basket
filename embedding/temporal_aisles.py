@@ -4,6 +4,7 @@ Created on Sat Nov 16 11:50:57 2024
 
 @author: congx
 """
+import gc
 import os
 import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -14,11 +15,12 @@ from tqdm import tqdm
 from itertools import chain
 from utils.utils import pad,logger,TMP_PATH,pickle_save_load
 from torch.cuda.amp import autocast,GradScaler
-from nn_model.double_layer_lstm import AisleLSTM
+from nn_model.aisle_lstm import AisleLSTM
 from embedding.trainer import Trainer
+from more_itertools import unique_everseen
 # from create_merged_data import data_processing
 
-def aisle_data_maker(data,max_len,aisle_dept_dict,mode='train'):
+def aisle_data_maker(agg_data,data,max_len,aisle_dept_dict,mode='train'):
     suffix = mode + '.pkl'
     save_path = [path+'_'+suffix for path in ['user_aisle','temporal_dict','aisle_data_dict']]
     check_files = np.all([os.path.exists(os.path.join(TMP_PATH,file)) for file in save_path])
@@ -35,7 +37,7 @@ def aisle_data_maker(data,max_len,aisle_dept_dict,mode='train'):
     
     user_aisle = []
     temporal_dict,data_dict = {},{}
-    dpar = tqdm(data.iterrows(),total=len(data),desc='building aisle data for dataloader',
+    dpar = tqdm(agg_data.iterrows(),total=len(agg_data),desc='building aisle data for dataloader',
                 dynamic_ncols=True,leave=False)
     for _,row in dpar:
         user_id,aisles,reorders = row['user_id'],row['aisle_id'],row['reordered']
@@ -54,6 +56,7 @@ def aisle_data_maker(data,max_len,aisle_dept_dict,mode='train'):
         temporal_dict[user_id] = [order_dow,order_hour,order_tz]
         
         aisles,next_aisles = aisles[:-1],aisles[-1]
+        next_aisles = next_aisles.split('_')
         orders = [aisle.split('_') for aisle in aisles]
         all_aisles = list(set(chain.from_iterable([aisle.split('_') for aisle in aisles])))
         reorders = reorders[:-1]
@@ -68,8 +71,6 @@ def aisle_data_maker(data,max_len,aisle_dept_dict,mode='train'):
             in_order_ord  =[]
             index_order_ord = []
             index_order_ratio_ord = []
-            reorder_cnt_ord = []
-            reorder_cnt_ratio_ord = []
             cumsum_inorder_ratio_ord = []
             cumsum_inorder_ord = []
             cnt_ord = []
@@ -78,36 +79,31 @@ def aisle_data_maker(data,max_len,aisle_dept_dict,mode='train'):
             for idx,(order_aisle,reorder_aisle) in enumerate(zip(orders,reorders)):
                 order_size = len(order_aisle)
                 in_order = aisle in order_aisle
-                index_in_order = order_aisle.index(aisle) if in_order else 0
-                index_in_order_ratio = index_in_order / order_size
-                total_orders = [idx+1 for idx,ele in enumerate(order_aisle) if ele==aisle]
+                order_set = list(unique_everseen(order_aisle))
+                index_in_order = order_set.index(aisle) + 1 if in_order else 0
+                index_in_order_ratio = index_in_order / len(order_set)
+                total_orders = [1 if ele==aisle else 0 for ele in enumerate(order_aisle)]
                 cumsum_inorder += in_order
                 cumsum_inorder_ratio = cumsum_inorder / (idx + 1)
-                reorder_total = sum(reorder_aisle)
-                reorder_ratio = reorder_total / order_size
+                cur_cnt = sum(total_orders)
+                # total_cnts += cur_cnt
+                # cumsum_cnt_ratio = total_cnts / (idx + 1)
 
                 in_order_ord.append(in_order)
                 index_order_ord.append(index_in_order)
                 index_order_ratio_ord.append(index_in_order_ratio)
-                reorder_cnt_ord.append(reorder_total)
-                reorder_cnt_ratio_ord.append(reorder_ratio)
                 cumsum_inorder_ord.append(cumsum_inorder)
                 cumsum_inorder_ratio_ord.append(cumsum_inorder_ratio)
-                
-                cur_cnt = len(total_orders)
-                total_cnts += cur_cnt
-                cumsum_cnt_ratio = total_cnts / (idx + 1)
-                
                 order_sizes_ord.append(order_size)
                 cnt_ord.append(cur_cnt)
-                cumsum_cnt_ratio_ord.append(cumsum_cnt_ratio)
+                # cumsum_cnt_ratio_ord.append(cumsum_cnt_ratio)
             
             next_in_order = np.roll(in_order_ord,-1)
             next_in_order[-1] = label
             
             aisle_info = np.stack([in_order_ord,np.array(index_order_ord)/145,index_order_ratio_ord,
-                                   cumsum_inorder_ratio_ord,order_days/30,reorder_cnt_ord,reorder_cnt_ratio_ord,
-                                   np.array(order_sizes_ord)/145,cumsum_cnt_ratio_ord,cnt_ord,next_in_order],axis=1).astype(np.float16)
+                                   cumsum_inorder_ratio_ord,order_days/30,
+                                   np.array(order_sizes_ord)/145,cnt_ord,next_in_order],axis=1).astype(np.float16)
             aisle_info_dim = aisle_info.shape[1] - 1
             length = aisle_info.shape[0]
             padded_len = max_len - length
@@ -192,7 +188,7 @@ class AisleTrainer(Trainer):
     
     def build_data_dl(self,mode):
         agg_data = self.build_agg_data('aisle_id')
-        data_group = self.data_maker(agg_data,self.max_len,self.aisle_dept_dict,mode=mode)
+        data_group = self.data_maker(agg_data,self.data,self.max_len,self.aisle_dept_dict,mode=mode)
         user_aisle,data_dict,temp_dict,aisle_dim = data_group
         for key,value in temp_dict.items():
             for i in range(len(value)):
@@ -204,14 +200,13 @@ class AisleTrainer(Trainer):
     def train(self,use_amp=False):
         core_info_tr= self.build_data_dl(mode='train')
         model,optimizer,lr_scheduler,start_epoch,best_loss,checkpoint_path = super().train(use_amp=use_amp)
-        eval_dl = self.dataloader(*core_info_tr,1024,False,False)
         
         no_improvement = 0
         for epoch in range(start_epoch,self.epochs):
             total_loss,cur_iter = 0,1
             model.train()
             train_dl = self.dataloader(*core_info_tr,self.batch_size,True,True)
-            train_batch_loader = tqdm(train_dl,total=core_info_tr[0].shape[0]//self.batch_size,desc=f'training next order basket at epoch:{epoch}',
+            train_batch_loader = tqdm(train_dl,total=core_info_tr[0].shape[0]//self.batch_size,desc=f'training next aisle basket at epoch:{epoch}',
                                       dynamic_ncols=True,leave=False)
             for batch,batch_lengths,temps,*aux_info in train_batch_loader:
                 batch,label = batch[:,:,:-1],batch[:,:,-1]
@@ -224,13 +219,13 @@ class AisleTrainer(Trainer):
                 if use_amp:
                     scaler = GradScaler()
                     with autocast():
-                        preds = model(batch,*temps)
+                        _,preds = model(batch,*temps)
                         loss = self.loss_fn_tr(preds,label,batch_lengths)
                     scaler.scale(loss).backward()
                     scaler.step(optimizer)
                     scaler.update()
                 else:
-                    preds = model(batch,*aux_info,*temps)
+                    _,preds = model(batch,*aux_info,*temps)
                     loss = self.loss_fn_tr(preds,label,batch_lengths)
                     loss.backward()
                     optimizer.step()
@@ -243,7 +238,9 @@ class AisleTrainer(Trainer):
                 train_batch_loader.set_postfix(train_loss=f'{avg_loss:.05f}')
             
             if epoch % self.eval_epoch == 0:
-                eval_batch_loader = tqdm(eval_dl,total=core_info_tr[0].shape[0]//1024,desc='evaluating next order basket',
+                params = []
+                eval_dl = self.dataloader(*core_info_tr,1024,False,False)
+                eval_batch_loader = tqdm(eval_dl,total=core_info_tr[0].shape[0]//1024,desc='evaluating next aisle basket',
                                          leave=False,dynamic_ncols=True)
                 model.eval()
                 total_loss_val,ite = 0,1
@@ -255,7 +252,7 @@ class AisleTrainer(Trainer):
                         temps = [torch.stack(temp) for temp in temps]
                         aux_info = [convert_index_cuda(b) for b in aux_info]
                         
-                        preds = model(batch,*aux_info,*temps)
+                        h,preds = model(batch,*aux_info,*temps)
                         loss = self.loss_fn_te(preds,label,batch_lengths)
                         
                         total_loss_val += loss.item()
@@ -264,9 +261,16 @@ class AisleTrainer(Trainer):
                         eval_batch_loader.set_postfix(eval_loss=f'{avg_loss_val:.05f}')
                         
                         users,aisles,_  = aux_info
-                        users,aisles = users.cpu().numpy(),aisle
-                        
-                        
+                        users,aisles = users.cpu().numpy(),aisles.cpu().numpy()
+                        h = h.cpu().numpy()
+                        h = h.astype(np.float16)
+                        users += 1;aisles += 1
+                        keys = np.stack([users,aisles],axis=1)
+                        keys = list(map(tuple,(map(np.squeeze,np.split(keys,keys.shape[0],axis=0)))))
+                        values = list(map(np.squeeze,np.split(h,h.shape[0],axis=0)))
+                        param_list = list((map(lambda kv:(kv[0],kv[1]),zip(keys,values))))
+                        params += param_list
+                param_dict = dict(params)
                 lr_scheduler.step(avg_loss_val)
                 
                 if avg_loss_val < best_loss:
@@ -277,9 +281,12 @@ class AisleTrainer(Trainer):
                                   'optimizer_state_dict':optimizer.state_dict()}
                     os.makedirs('checkpoint',exist_ok=True)
                     torch.save(checkpoint,checkpoint_path)
+                    pickle_save_load('data/tmp/user_aisle_param.pkl',param_dict,mode='save') 
                     no_improvement = 0
                 else:
                     no_improvement += 1
+                del param_dict
+                gc.collect()
                     
                 if no_improvement == self.early_stopping:
                     logger.info('early stopping is trggered,the model has stopped improving')
@@ -297,9 +304,9 @@ if __name__ == '__main__':
     # data_ = data.iloc[start_index:end_index]
     trainer = AisleTrainer(data,
                            products,
-                           output_dim=100,
+                           output_dim=20,
                            lagging=1,
-                           learning_rate=0.005,
+                           learning_rate=0.002,
                            optim_option='adam',
                            batch_size=256,
                            warm_start=False,
@@ -310,21 +317,32 @@ if __name__ == '__main__':
     
 
 #%%
-import torch
+# import torch
 # import pandas as pd
 # import numpy as np
-# data = pd.read_pickle('data/tmp/user_product_info.csv')
-# z = data.iloc[:1000]
-# # checkpoint = torch.load('checkpoint/ProdLSTM_best_checkpoint.pth')
+# from utils.utils import Timer
+# agg_data = pd.read_pickle('data/tmp/user_product_info.csv')
+# z = agg_data.iloc[:1000]
+# checkpoint = torch.load('checkpoint/ProdLSTM_best_checkpoint.pth')
 # # orders = pd.read_csv('data/orders_info.csv')
 # np.stack([[1,2,3],np.array([4,5,6])],axis=1)
 # dl = aisle_dataloader(z[0],z[1],z[2])
 # for batch in dl:
 #     break
+# np.split(x,x.shape[0],axis=0)
 #%%
 # products = pd.read_csv('data/products.csv')
-# x = products.set_index('aisle_id')['department_id'].to_dict()
-x = torch.tensor([1,2,3,4]).cuda()
-x.cpu().numpy()
+# x = torch.rand(32,15,10)
+# for v in list(map(torch.squeeze,torch.split(x,1,dim=0))):
+#     print(v.shape)
 
+# data = pd.read_csv('data/orders_info.csv')
+# z = data.iloc[:100000]
+# z = data.groupby(['user_id','department_id'])['department'].count()
+# from more_itertools import unique_everseen
+# x = [1,2,2,6,1,1,3,4,2,3,4,9,10]
+# y = ['a','b','a']
+# list(unique_everseen(y))
+# list(unique_everseen(list(map(str,x))))
+# x.index()
 

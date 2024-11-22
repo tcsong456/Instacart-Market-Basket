@@ -77,11 +77,17 @@ def split_time_zone(hour):
         return 'midnight'
     
 def pickle_save_load(path,data=None,mode='save'):
+    name = path.split('/')[-1]
+    if '.' in name:
+        ind = name.find('.')
+        name = name[:ind]
     if mode == 'save':
         assert data is not None,'data must be provided when it is in save mode'
+        logger.info(f'saving file {name}')
         with open(path,'wb') as f:
             pickle.dump(data,f)
     elif mode == 'load':
+        logger.info(f'loading file {name}')
         with open(path,'rb') as f:
             data = pickle.load(f)
         return data
@@ -111,4 +117,6 @@ class Timer:
         print(f'it took {elapsed:.{self.precision}f} seconds to complete')
 
 #%%
-
+s = 'abcdesf'
+ind = s.find('.')
+s[:-1]

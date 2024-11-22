@@ -42,6 +42,8 @@ class AisleLSTM(nn.Module):
         
         outputs,_ = self.lstm(x)
         h = self.final(outputs)
-        return h
+        outputs = torch.cat([outputs,torch.sigmoid(h)],dim=-1)
+        h = h.squeeze()
+        return outputs,h
 
 #%%

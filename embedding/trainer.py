@@ -85,6 +85,7 @@ class Trainer:
             model.load_state_dict(checkpoint['model_state_dict'])
             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             start_epoch = checkpoint['best_epoch']
+            start_epoch += 1
             best_loss = checkpoint['best_loss']
             logger.info(f'warm starting training from best epoch:{start_epoch} and best loss:{best_loss:.5f}')
         else:
