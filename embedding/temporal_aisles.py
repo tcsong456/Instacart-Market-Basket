@@ -13,12 +13,12 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 from itertools import chain
-from utils.utils import pad,logger,TMP_PATH,pickle_save_load
+from utils.utils import pad,logger,TMP_PATH,pickle_save_load,optimize_dtypes
 from torch.cuda.amp import autocast,GradScaler
 from nn_model.aisle_lstm import AisleLSTM
 from embedding.trainer import Trainer
 from more_itertools import unique_everseen
-# from create_merged_data import data_processing
+from embedding.base_stats_collector import BaseStatsCollector
 
 def aisle_data_maker(agg_data,data,max_len,aisle_dept_dict,mode='train'):
     suffix = mode + '.pkl'
@@ -294,55 +294,160 @@ class AisleTrainer(Trainer):
     
 if __name__ == '__main__':
     data = pd.read_csv('data/orders_info.csv')
-    products = pd.read_csv('data/products.csv')
-    
-    # np.random.seed(9999)
-    # TEST_LENGTH = 1000000
-    # start_index = np.random.randint(0,data.shape[0]-TEST_LENGTH)
-    # end_index = start_index + TEST_LENGTH
-    
-    # data_ = data.iloc[start_index:end_index]
-    trainer = AisleTrainer(data,
-                           products,
-                           output_dim=20,
-                           lagging=1,
-                           learning_rate=0.002,
-                           optim_option='adam',
-                           batch_size=256,
-                           warm_start=False,
-                           early_stopping=2,
-                           epochs=100,
-                           eval_epoch=1)
-    trainer.train(use_amp=False)
+#     products = pd.read_csv('data/products.csv')
+
+#     trainer = AisleTrainer(data,
+#                            products,
+#                            output_dim=20,
+#                            lagging=1,
+#                            learning_rate=0.002,
+#                            optim_option='adam',
+#                            batch_size=256,
+#                            warm_start=False,
+#                            early_stopping=2,
+#                            epochs=100,
+#                            eval_epoch=1)
+#     trainer.train(use_amp=False)
     
 
 #%%
-# import torch
-# import pandas as pd
-# import numpy as np
-# from utils.utils import Timer
-# agg_data = pd.read_pickle('data/tmp/user_product_info.csv')
-# z = agg_data.iloc[:1000]
-# checkpoint = torch.load('checkpoint/ProdLSTM_best_checkpoint.pth')
-# # orders = pd.read_csv('data/orders_info.csv')
-# np.stack([[1,2,3],np.array([4,5,6])],axis=1)
-# dl = aisle_dataloader(z[0],z[1],z[2])
-# for batch in dl:
-#     break
-# np.split(x,x.shape[0],axis=0)
+import operator
+from collections import defaultdict,Counter
+class AisleStatsCollector(BaseStatsCollector):
+    def __init__(self,
+                 data):
+        super().__init__(data=data)
+        user_unique_aisles = data.groupby('user_id')['aisle_id'].apply(set).apply(list)
+        self.unique_dict = user_unique_aisles.to_dict()
+        self.stats = self.build_data()
+    
+    def build_data(self):
+        stats = []
+        
+        order_aisle = self.data.groupby(['user_id','order_id','order_number','aisle_id'])['counter'].sum().reset_index()
+        order_aisle = order_aisle.sort_values(['user_id','order_number'])
+        order_aisle_ls = order_aisle.groupby(['user_id','order_id','order_number'])['aisle_id'].apply(list).reset_index()
+        order_aisle_ls = order_aisle_ls.sort_values(['user_id','order_number'])
+        del order_aisle_ls['order_number']
+        stats.append(order_aisle_ls)
+        
+        order_aisle_shift = order_aisle_ls.groupby('user_id')['aisle_id'].shift(-1)
+        order_aisle_shift.name = 'aisle_next'
+        stats.append(order_aisle_shift)
+        
+        order_aisle_cnt = order_aisle.groupby(['user_id','order_id','order_number'])['counter'].apply(list).reset_index()
+        order_aisle_cnt = order_aisle_cnt.sort_values(['user_id','order_number'])
+        del order_aisle_cnt['order_number']
+        stats.append(order_aisle_cnt[['counter']])
+        
+        for col in ['order_dow','days_since_prior_order']:
+            s = self._shift_stats(col)
+            stats.append(s)
+        stats = pd.concat(stats,axis=1)
+        stats = optimize_dtypes(stats)
+        return stats
+    
+    def _shift_stats(self,col):
+        stat = self.data.groupby(['user_id','order_id','order_number'])[col].apply(lambda x:x.iloc[-1]).reset_index()
+        stat = stat.sort_values(['user_id','order_number'])
+        del stat['order_number']
+        stat = stat.groupby(['user_id'])[col].shift(-1)
+        stat.name = col
+        return stat
+    
+    def true_adjacent_stat(self,valid_cnt=1,min_interval=0,max_interval=31,comparator='equal'):
+        operators = {'equal':operator.eq,
+                     'greater_equal':operator.ge}
+        op = operators[comparator]
+        true_stats = defaultdict(lambda:defaultdict(int))
+        true_interval_stats = defaultdict(list)
+        rows = tqdm(self.stats.iterrows(),total=self.stats.shape[0],desc='building true adjacent row stat')
+        for _,row in rows:
+            user,cur_aisles,next_aisles,cnts = row['user_id'],row['aisle_id'],row['aisle_next'],row['counter']
+            if not isinstance(next_aisles,list):
+                continue
+            order_interval = row['days_since_prior_order']
+            unique_aisles = self.unique_dict[user]
+            for aisle in unique_aisles:
+                if aisle in cur_aisles :
+                    index = cur_aisles.index(aisle)
+                    cnt = cnts[index]
+                    if op(cnt,valid_cnt) and order_interval >= min_interval and order_interval <  max_interval:
+                        key = f'{str(cnt)}_{str(min_interval)}_{str(max_interval)}'
+                        true_stats[aisle][f'total_{key}'] += 1
+                        if aisle in next_aisles:
+                            true_stats[aisle][f'in_{key}'] += 1
+                            true_interval_stats[aisle].append(order_interval)
+                            
+        true_stats = self._convert_to_prob_dict(true_stats)
+        for key,value in true_interval_stats.items():
+            value = self._convert_list_to_dist(value)
+            true_interval_stats[key] = value
+        
+        true_stats = self._check_nan(true_stats)
+        return true_stats,true_interval_stats
+    
+aisle_collector = AisleStatsCollector(data=data)
+aisle_data = aisle_collector.build_data()
+        
 #%%
-# products = pd.read_csv('data/products.csv')
-# x = torch.rand(32,15,10)
-# for v in list(map(torch.squeeze,torch.split(x,1,dim=0))):
-#     print(v.shape)
+# a,b = aisle_collector.true_adjacent_stat(valid_cnt=3,min_interval=7,max_interval=23,operator='equal')
+a
+#%%
+from collections import Counter
+import matplotlib.pyplot as plt
+# user_unique_aisles = data.groupby('user_id')['aisle_id'].apply(set).apply(list)
+# user_unique_aisles_dict = user_unique_aisles.to_dict()
+# unique_aisles = data['aisle_id'].unique()
 
-# data = pd.read_csv('data/orders_info.csv')
-# z = data.iloc[:100000]
-# z = data.groupby(['user_id','department_id'])['department'].count()
-# from more_itertools import unique_everseen
-# x = [1,2,2,6,1,1,3,4,2,3,4,9,10]
-# y = ['a','b','a']
-# list(unique_everseen(y))
-# list(unique_everseen(list(map(str,x))))
-# x.index()
+def _convert_to_prob_dict(x):
+    df = pd.DataFrame.from_dict({k:dict(v) for k,v in x.items()},orient='index')
+    col1,col2 = df.columns
+    df = df[col2] / df[col1]
+    df = df.to_dict()
+    return df
 
+def _convert_list_to_dist(x):
+    counter = Counter(x)
+    df = pd.DataFrame.from_dict(counter,orient='index')
+    df /= df.sum()
+    df = df.to_dict()
+    return df[0]
+
+def true_adjacent_stat(x,valid_cnt=1,min_interval=0,max_interval=31,comparator='equal'):
+    operators = {'equal':operator.eq,
+                 'greater_equal':operator.ge}
+    op = operators[comparator]
+    true_stats = defaultdict(lambda:defaultdict(int))
+    true_interval_stats = defaultdict(list)
+    rows = tqdm(x.iterrows(),total=x.shape[0],desc='building true adjacent row stat')
+    for _,row in rows:
+        user,cur_aisles,next_aisles,cnts = row['user_id'],row['aisle_id'],row['aisle_next'],row['counter']
+        if not isinstance(next_aisles,list):
+            continue
+        order_interval = row['days_since_prior_order']
+        unique_aisles = user_unique_aisles_dict[user]
+        for aisle in unique_aisles:
+            if aisle in cur_aisles :
+                index = cur_aisles.index(aisle)
+                cnt = cnts[index]
+                if op(cnt,valid_cnt) and order_interval >= min_interval and order_interval <  max_interval:
+                    key = f'{str(cnt)}_{str(min_interval)}_{str(max_interval)}'
+                    true_stats[aisle][f'total_{key}'] += 1
+                    if aisle in next_aisles:
+                        true_stats[aisle][f'in_{key}'] += 1
+                        true_interval_stats[aisle].append(order_interval)
+                        
+    true_stats = _convert_to_prob_dict(true_stats)
+    for key,value in true_interval_stats.items():
+        value = _convert_list_to_dist(value)
+        true_interval_stats[key] = value
+    return true_stats,true_interval_stats
+    
+a,b = true_adjacent_stat(aisle_data)
+        
+        
+#%%
+
+    
+    

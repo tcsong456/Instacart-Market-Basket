@@ -9,9 +9,8 @@ import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 import numpy as np
 import pandas as pd
-from utils.utils import TMP_PATH
 from sklearn.preprocessing import LabelEncoder
-from utils.utils import load_data,optimize_dtypes,split_time_zone,logger
+from utils.utils import load_data,optimize_dtypes,split_time_zone,logger,TMP_PATH
 from pandas.api.types import is_float_dtype
 
 def create_orders_info(path):
@@ -38,8 +37,8 @@ def create_orders_info(path):
     del order_products
     
     orders['order_dow_text'] = orders['order_dow'].map(week_days_map)
-    orders['time_zone'] = orders['order_hour_of_day'].apply(split_time_zone)
-    orders['time_zone'] = orders['order_dow_text'] + '-' + orders['time_zone']
+    orders['hour_zone'] = orders['order_hour_of_day'].apply(split_time_zone)
+    orders['time_zone'] = orders['order_dow_text'] + '-' + orders['hour_zone']
     le = LabelEncoder()
     orders['time_zone'] = le.fit_transform(orders['time_zone'])
     del orders['order_dow_text']
