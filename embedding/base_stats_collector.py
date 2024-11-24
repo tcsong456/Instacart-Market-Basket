@@ -36,7 +36,7 @@ class BaseStatsCollector:
                 x[k] = v
         return x
         
-    def fake_adjacent_stat(self,x):
+    def fake_adjacent_stat(self):
         fake_stats = defaultdict(lambda:defaultdict(int))
         fake_interval_stats = defaultdict(list)
         no_buy_interval = 0
@@ -66,6 +66,11 @@ class BaseStatsCollector:
         
     def build_data(self):
         raise NotImplementedError("subclass must implement function 'build_data'")
+    
+    def save(self):
+        raise NotImplementedError("subclass must implement function 'save'")
 
 
 #%%
+
+
