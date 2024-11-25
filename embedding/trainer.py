@@ -52,7 +52,7 @@ class Trainer:
         self.data = data
         self.prod_data = prod_data
         self.lagging = lagging
-        temp_list = ['order_dow','order_hour_of_day','time_zone']
+        temp_list = ['order_dow','order_hour_of_day','time_zone','days_since_prior_order']
         self.temp_dim = sum([data[t].max()+1 for t in temp_list])
         self.max_len = data['order_number'].max()
         

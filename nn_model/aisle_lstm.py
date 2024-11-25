@@ -27,19 +27,22 @@ class AisleLSTM(nn.Module):
                             output_dim,
                             batch_first=True)
         self.final = nn.Linear(output_dim,1)
+        self.input_dim = input_dim
     
-    def forward(self,x,users,aisles,depts,dows,hours,tzs):
+    def forward(self,x,users,aisles,depts,dows,hours,tzs,days):
         oh_dows = F.one_hot(dows,num_classes=7)
         oh_hours = F.one_hot(hours,num_classes=24)
         oh_tzs = F.one_hot(tzs,num_classes=28)
-        temp = torch.cat([oh_dows,oh_hours,oh_tzs],dim=-1)
+        oh_days = F.one_hot(days,num_classes=31)
+
+        temp = torch.cat([oh_dows,oh_hours,oh_tzs,oh_days],dim=-1)
         user_embedding = self.user_embedding(users)
         aisle_embedding = self.aisle_embedding(aisles)
         dept_embedding = self.dept_embedding(depts)
         embedding = torch.cat([user_embedding,aisle_embedding,dept_embedding],dim=-1)
         embedding = embedding.unsqueeze(1).repeat(1, self.max_len, 1) 
         x = torch.cat([x,temp,embedding],dim=-1)
-        
+
         outputs,_ = self.lstm(x)
         h = self.final(outputs)
         outputs = torch.cat([outputs,torch.sigmoid(h)],dim=-1)

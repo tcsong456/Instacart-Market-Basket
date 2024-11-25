@@ -29,21 +29,22 @@ class BaseStatsCollector:
         df = df.to_dict()
         return df[0]
     
-    def _check_nan(self,x):
-        for k,v in x.items():
-            if np.isnan(v):
-                v = 0
-                x[k] = v
-        return x
+    def _replace_nan(self,d):
+        for k,v in d.items():
+            if isinstance(v,dict):
+                d[k] = self._replace_nan(v)
+            elif isinstance(v,float) and np.isnan(v):
+                d[k] = 0
+        return d
         
     def fake_adjacent_stat(self):
         fake_stats = defaultdict(lambda:defaultdict(int))
         fake_interval_stats = defaultdict(list)
         no_buy_interval = 0
-        rows = tqdm(self.stats.iterrows(),total=self.stats.shape[0],desc='building true adjacent row stat')
+        rows = tqdm(self.stats.iterrows(),total=self.stats.shape[0],desc='building fake adjacent row stat')
         for _,row in rows:
             user,cur_aisles,next_aisles = row['user_id'],row['aisle_id'],row['aisle_next']
-            if not isinstance(next_aisles,list):
+            if np.isnan(next_aisles) or next_aisles == [-1]:
                 no_buy_interval = 0
                 continue
             order_interval = row['days_since_prior_order']
@@ -61,8 +62,16 @@ class BaseStatsCollector:
         for key,value in fake_interval_stats.items():
             value = self._convert_list_to_dist(value)
             fake_interval_stats[key] = value
-        fake_stats = self._check_nan((fake_stats))
+        fake_stats = self._replace_nan((fake_stats))
         return fake_stats,fake_interval_stats
+    
+    @property
+    def mapping(self):
+        d = {}
+        for v in [range(0,8),range(8,23),range(23,31)]:
+            start,end = v.start,v.stop
+            d.update({i:f'{start}_{end}'for i in v})
+        return d
         
     def build_data(self):
         raise NotImplementedError("subclass must implement function 'build_data'")
@@ -72,5 +81,3 @@ class BaseStatsCollector:
 
 
 #%%
-
-
