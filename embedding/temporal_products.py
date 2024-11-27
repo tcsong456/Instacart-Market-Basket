@@ -199,14 +199,14 @@ def product_dataloader(inp,
     for batch in batch_gen():
         split_outputs = np.split(batch,batch.shape[1],axis=1)
         users,prods,aisles,depts = list(map(np.squeeze,split_outputs))
-        dows,hours,tzs = zip(*list(map(temp_dict.get,users)))
+        dows,hours,tzs,days = zip(*list(map(temp_dict.get,users)))
         keys = batch[:,:2]
         keys = np.split(keys,keys.shape[0],axis=0)
         keys = list(map(tuple,(map(np.squeeze,keys))))
         data,length = zip(*list(map(data_dict.get,keys)))
         full_batch = np.stack(data)
         batch_lengths = list(length)
-        temporals = [dows,hours,tzs]
+        temporals = [dows,hours,tzs,days]
         yield full_batch,batch_lengths,temporals,users-1,prods,aisles,depts
 
 class ProductTrainer(Trainer):
@@ -238,12 +238,13 @@ class ProductTrainer(Trainer):
         self.data_maker = product_data_maker
         self.emb_list = ['user_id','product_id','aisle_id','department_id']
         self.max_index_info = [data[col].max()+1 for col in self.emb_list] + [self.max_len]
-        self.prod_aisle_dict = self.prod_data.set_index('product_id')['aisle_id'].to_dict()
-        self.prod_dept_dict = self.prod_data.set_index('product_id')['department_id'].to_dict()
+        prod_aisle_dict = self.prod_data.set_index('product_id')['aisle_id'].to_dict()
+        prod_dept_dict = self.prod_data.set_index('product_id')['department_id'].to_dict()
+        self.data_maker_dicts = [prod_aisle_dict,prod_dept_dict]
     
     def build_data_dl(self,mode):
         agg_data = self.build_agg_data('product_id')
-        data_group = self.data_maker(agg_data,self.max_len,self.prod_aisle_dict,self.prod_dept_dict,mode=mode)
+        data_group = self.data_maker(agg_data,self.max_len,*self.data_maker_dicts,mode=mode)
         user_prod,data_dict,temp_dict,prod_dim = data_group
         for key,value in temp_dict.items():
             for i in range(len(value)):
@@ -287,13 +288,13 @@ class ProductTrainer(Trainer):
                 if use_amp:
                     scaler = GradScaler()
                     with autocast():
-                        preds = model(batch,*temps)
+                        h,preds = model(batch,*temps)
                         loss = self.loss_fn_tr(preds,label,batch_lengths)
                     scaler.scale(loss).backward()
                     scaler.step(optimizer)
                     scaler.update()
                 else:
-                    preds = model(batch,*aux_info,*temps)
+                    h,preds = model(batch,*aux_info,*temps)
                     loss = self.loss_fn_tr(preds,label,batch_lengths)
                     loss.backward()
                     optimizer.step()
@@ -306,6 +307,7 @@ class ProductTrainer(Trainer):
                 train_batch_loader.set_postfix(train_loss=f'{avg_loss:.05f}')
             
             if epoch % self.eval_epoch == 0:
+                pred_embs_eval = []
                 model.eval()
                 total_loss_val,ite = 0,1
                 eval_dl = self.dataloader(*core_info_tr,1024,False,False)
@@ -320,14 +322,18 @@ class ProductTrainer(Trainer):
                         temps = [torch.stack(temp) for temp in temps]
                         aux_info = [convert_index_cuda(b) for b in aux_info]
                         
-                        preds = model(batch,*aux_info,*temps)
+                        h,preds = model(batch,*aux_info,*temps)
                         loss = self.loss_fn_te(preds,label,batch_lengths)
                         
                         total_loss_val += loss.item()
                         avg_loss_val = total_loss_val / ite
                         ite += 1
                         eval_batch_loader.set_postfix(eval_loss=f'{avg_loss_val:.05f}')
+                        
+                        pred_emb_val = self._collect_final_time_step(batch_lengths,aux_info,h,label)
+                        pred_embs_eval.append(pred_emb_val)
                 lr_scheduler.step(avg_loss_val)
+                pred_embs_eval = np.concatenate(pred_embs_eval).astype(np.float32)
                 
                 if avg_loss_val < best_loss:
                     best_loss = avg_loss_val
@@ -337,6 +343,7 @@ class ProductTrainer(Trainer):
                                   'optimizer_state_dict':optimizer.state_dict()}
                     os.makedirs('checkpoint',exist_ok=True)
                     torch.save(checkpoint,checkpoint_path)
+                    np.save('metadata/user_product_eval.npy',pred_embs_eval)
                     no_improvement = 0
                 else:
                     no_improvement += 1
@@ -345,45 +352,6 @@ class ProductTrainer(Trainer):
                     logger.info('early stopping is trggered,the model has stopped improving')
                     return
                 
-    def predict(self):
-        predict_data = self.agg_data[self.agg_data['eval_set']=='test']
-        data_te = self.data_maker(predict_data,self.max_len,self.prod_aisle_dict,self.prod_dept_dict,mode='test')
-        user_prod,prod_feat_dict,temporal_dict,feat_dim = data_te
-        for key,value in temporal_dict.items():
-            for i in range(len(value)):
-                value[i] = torch.Tensor(value[i]).long().cuda()
-            temporal_dict[key] = value
-        model = self.model(self.input_dim,self.output_dim,*self.max_index_info).to('cuda')
-        checkpoint = torch.load(self.checkpoint_path)
-        model.load_state_dict(checkpoint['model_state_dict'])
-        
-        test_dl = product_dataloader(user_prod,prod_feat_dict,temporal_dict,1024,False,False)
-        test_batch_loader = tqdm(test_dl,total=user_prod.shape[0]//1024,desc='predicting next reorder basket',
-                                 leave=False,dynamic_ncols=True)
-        predictions = []
-        with torch.no_grad():
-            for batch,batch_lengths,temps,users,prods,aisles,depts in test_batch_loader:
-                batch = batch[:,:,:-1]
-                batch = torch.from_numpy(batch).cuda()
-                temps = [torch.stack(temp) for temp in temps]
-                aux_info = [convert_index_cuda(b) for b in [users,prods,aisles,depts]]
-                
-                preds = model(batch,*aux_info,*temps)
-                preds = torch.sigmoid(preds).cpu()
-                index = torch.Tensor(batch_lengths).long().reshape(-1,1) - 1
-                probs = torch.gather(preds,dim=1,index=index).numpy()
-                
-                users +=1
-                user_product = np.stack([users,prods],axis=1)
-                user_product_prob  = np.concatenate([user_product,probs],axis=1)
-                predictions.append(user_product_prob)
-        
-        predictions = np.concatenate(predictions).astype(np.float32)
-        os.makedirs('metadata',exist_ok=True)
-        pred_path = 'metadata/user_product_prob.npy'
-        np.save(pred_path,predictions)
-        logger.info(f'predictions saved to {pred_path}')
-        return predictions
 
 
 if __name__ == '__main__':
@@ -393,17 +361,17 @@ if __name__ == '__main__':
         
     product_trainer = ProductTrainer(data,
                                     products,
-                                    output_dim=100,
+                                    output_dim=50,
                                     eval_epoch=1,
                                     epochs=10,
                                     learning_rate=0.002,
                                     lagging=1,
                                     batch_size=512,
                                     early_stopping=2,
-                                    warm_start=True,
+                                    warm_start=False,
                                     optim_option='adam')
     product_trainer.train(use_amp=False,use_extra_params=False)
-    product_trainer.predict()
+    product_trainer.predict(save_name='user_product_pred')
     # predict(*outputs,
     #         output_dim=100,
     #         emb_dim=50)

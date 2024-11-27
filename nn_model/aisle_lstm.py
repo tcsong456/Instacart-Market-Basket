@@ -34,8 +34,8 @@ class AisleLSTM(nn.Module):
         oh_hours = F.one_hot(hours,num_classes=24)
         oh_tzs = F.one_hot(tzs,num_classes=28)
         oh_days = F.one_hot(days,num_classes=31)
-
         temp = torch.cat([oh_dows,oh_hours,oh_tzs,oh_days],dim=-1)
+        
         user_embedding = self.user_embedding(users)
         aisle_embedding = self.aisle_embedding(aisles)
         dept_embedding = self.dept_embedding(depts)

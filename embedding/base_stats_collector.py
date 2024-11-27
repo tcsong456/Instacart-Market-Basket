@@ -38,32 +38,35 @@ class BaseStatsCollector:
         return d
         
     def fake_adjacent_stat(self):
+        all_aisles = self.data['aisle_id'].unique()
+        all_aisles = all_aisles[all_aisles!=-1]
         fake_stats = defaultdict(lambda:defaultdict(int))
-        fake_interval_stats = defaultdict(list)
-        no_buy_interval = 0
+        fake_interval_stats = defaultdict(int)
+        fake_ls = defaultdict(list)
         rows = tqdm(self.stats.iterrows(),total=self.stats.shape[0],desc='building fake adjacent row stat')
         for _,row in rows:
             user,cur_aisles,next_aisles = row['user_id'],row['aisle_id'],row['aisle_next']
-            if np.isnan(next_aisles) or next_aisles == [-1]:
-                no_buy_interval = 0
+            if np.isnan(next_aisles).any() or next_aisles == [-1]:
+                for k in all_aisles:
+                    fake_interval_stats[k] = 0
                 continue
             order_interval = row['days_since_prior_order']
             unique_aisles = self.unique_dict[user]
             for aisle in unique_aisles:
                 if aisle not in cur_aisles:
-                    no_buy_interval += order_interval
+                    fake_interval_stats[aisle] += order_interval
                     fake_stats[aisle]['total_cnt'] += 1
                     if aisle in next_aisles:
                         fake_stats[aisle]['cnt'] += 1
-                        fake_interval_stats[aisle].append(no_buy_interval)
-                        no_buy_interval = 0
+                        fake_ls[aisle].append(fake_interval_stats[aisle])
+                        fake_interval_stats[aisle] = 0
                         
         fake_stats = self._convert_to_prob_dict(fake_stats)
-        for key,value in fake_interval_stats.items():
+        for key,value in fake_ls.items():
             value = self._convert_list_to_dist(value)
-            fake_interval_stats[key] = value
+            fake_ls[key] = value
         fake_stats = self._replace_nan((fake_stats))
-        return fake_stats,fake_interval_stats
+        return fake_stats,fake_ls
     
     @property
     def mapping(self):
@@ -81,3 +84,6 @@ class BaseStatsCollector:
 
 
 #%%
+
+
+        

@@ -8,7 +8,6 @@ import torch
 import numpy as np
 from torch import nn
 from torch.nn import functional as F
-convert_to_tensor = lambda x:torch.Tensor(x).to('cuda')
 
 class ProdLSTM(nn.Module):
     def __init__(self,
@@ -31,13 +30,14 @@ class ProdLSTM(nn.Module):
         self.max_len = max_len
         self.final = nn.Linear(output_dim,1)
     
-    def forward(self,inputs,users,products,aisles,depts,dows,hours,tzs):
+    def forward(self,inputs,users,products,aisles,depts,dows,hours,tzs,days):
         batch,seq_len,_ = inputs.shape
 
         oh_tzs = F.one_hot(tzs,num_classes=28)
         oh_dows = F.one_hot(dows,num_classes=7)
         oh_hours = F.one_hot(hours,num_classes=24)
-        tmp = torch.cat([oh_dows,oh_hours,oh_tzs],dim=-1)
+        oh_days = F.one_hot(days,num_classes=31)
+        tmp = torch.cat([oh_dows,oh_hours,oh_tzs,oh_days],dim=-1)
 
         user_embedding = self.user_embedding(users)
         product_embedding = self.product_embedding(products)
@@ -48,9 +48,10 @@ class ProdLSTM(nn.Module):
         inputs = torch.cat([inputs,tmp,embedding],dim=-1)
         
         outputs,_ = self.lstm(inputs)
-
-        final_results = self.final(outputs).squeeze()
-        return final_results
+        h = self.final(outputs)
+        outputs = torch.cat([outputs,torch.sigmoid(h)],dim=-1)
+        h = h.squeeze()
+        return outputs,h
 
 class ProdLSTMV1(nn.Module):
     def __init__(self,
@@ -75,13 +76,14 @@ class ProdLSTMV1(nn.Module):
         self.max_len = max_len
         self.final = nn.Linear(output_dim,1)
     
-    def forward(self,inputs,users,products,aisles,depts,dows,hours,tzs):
+    def forward(self,inputs,users,products,aisles,depts,dows,hours,tzs,days):
         batch,seq_len,_ = inputs.shape
 
         oh_tzs = F.one_hot(tzs,num_classes=28)
         oh_dows = F.one_hot(dows,num_classes=7)
         oh_hours = F.one_hot(hours,num_classes=24)
-        tmp = torch.cat([oh_dows,oh_hours,oh_tzs],dim=-1)
+        oh_days = F.one_hot(days,num_classes=31)
+        tmp = torch.cat([oh_dows,oh_hours,oh_tzs,oh_days],dim=-1)
 
         user_embedding = self.user_embedding(users)
         product_embedding = self.product_embedding(products)
@@ -94,7 +96,7 @@ class ProdLSTMV1(nn.Module):
         users += 1;aisles += 1
         keys = np.stack([users,aisles],axis=1)
         keys = list(map(tuple,map(np.squeeze,np.split(keys,keys.shape[0],axis=0))))
-        # aisle_params = list(map(self.aisle_dict.get,keys))
+
         aisle_params = list(map(lambda key:self.aisle_dict.get(key,self.aisle_embedding(torch.Tensor([key[1]-1]).long().cuda()\
                                                                ).repeat(self.max_len,1).cpu()),keys))
         aisle_params = np.stack(aisle_params)
@@ -102,9 +104,10 @@ class ProdLSTMV1(nn.Module):
         
         inputs = torch.cat([inputs,tmp,aisle_params,embedding],dim=-1)
         outputs,_ = self.lstm(inputs)
-
-        final_results = self.final(outputs).squeeze()
-        return final_results
+        h = self.final(outputs)
+        outputs = torch.cat([outputs,torch.sigmoid(h)],dim=-1)
+        h = h.squeeze()
+        return outputs,h
 
 class TemporalNet(ProdLSTM):
     def __init__(self,
