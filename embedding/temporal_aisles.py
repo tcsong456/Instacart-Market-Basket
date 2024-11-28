@@ -396,7 +396,7 @@ class AisleTrainer(Trainer):
                         ite += 1
                         eval_batch_loader.set_postfix(eval_loss=f'{avg_loss_val:.05f}')
                         
-                        pred_emb_val = self._collect_final_time_step(batch_lengths,aux_info,h,label)
+                        pred_emb_val = self._collect_final_time_step(batch_lengths,aux_info,h)
                         pred_embs_eval.append(pred_emb_val)
 
                 lr_scheduler.step(avg_loss_val)
@@ -432,7 +432,7 @@ if __name__ == '__main__':
                             batch_size=256,
                             warm_start=False,
                             early_stopping=2,
-                            epochs=1,
+                            epochs=10,
                             eval_epoch=1)
     trainer.train(use_amp=False)
     trainer.predict(save_name='user_aisle_pred')
@@ -459,5 +459,5 @@ if __name__ == '__main__':
 # z = torch.gather(x,index=y-1,dim=1).squeeze()
 # np.concatenate([np.random.rand(32,10),np.random.rand(31,10)]).shape
 
-# preds = np.load('metadata/user_aisle_pred.npy')
+# preds = np.load('metadata/user_product_pred.npy')
 # z = preds[:1000]

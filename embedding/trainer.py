@@ -96,13 +96,13 @@ class Trainer:
         return model,optimizer,lr_scheduler,start_epoch,best_loss,checkpoint_path
     
     def _collect_final_time_step(self,lengths,aux_info,time_steps,label=None):
-        batch_lengths = torch.Tensor(lengths).reshape(-1,1).unsqueeze(-1).expand(-1,1,time_steps.shape[-1]).long().cuda() - 1
+        batch_lengths = torch.Tensor(lengths).reshape(-1,1).unsqueeze(-1).expand(-1,1,time_steps.shape[-1]).long().cuda() - self.lagging
         pred_emb = torch.gather(time_steps,index=batch_lengths,dim=1).squeeze()
         pred_emb = pred_emb.cpu().numpy()
         user_attr = torch.stack(aux_info[:2],dim=1).cpu().numpy() + 1
         pred_emb = np.concatenate([user_attr,pred_emb],axis=1)
         if label is not None:
-            index = torch.Tensor(lengths).reshape(-1,1).long().cuda() - 1
+            index = torch.Tensor(lengths).reshape(-1,1).long().cuda() - self.lagging
             label = torch.gather(label,dim=1,index=index)
             label = label.cpu().numpy()
             pred_emb = np.concatenate([pred_emb,label],axis=1)
@@ -131,17 +131,19 @@ class Trainer:
                 batch = torch.from_numpy(batch).cuda()
                 temps = [torch.stack(temp) for temp in temps]
                 aux_info = [convert_index_cuda(b) for b in aux_info]
-                
                 h,preds = model(batch,*aux_info,*temps)
-                # preds = torch.sigmoid(preds).cpu()
-                # index = torch.Tensor(batch_lengths).long().reshape(-1,1) - 1
-                # probs = torch.gather(preds,dim=1,index=index).numpy()
                 
-                # users,attrs = aux_info[:2]
-                # users += 1;attrs += retore_attr_extent
-                # user_attr = np.stack([users,attrs],axis=1)
-                # user_attr_prob  = np.concatenate([user_attr,probs],axis=1)
-                # predictions.append(user_attr_prob)
+                # if return_preds:
+                #     preds = torch.sigmoid(preds).cpu()
+                #     index = torch.Tensor(batch_lengths).long().reshape(-1,1) - 1
+                #     probs = torch.gather(preds,dim=1,index=index).numpy()
+                    
+                #     users,attrs = aux_info[:2]
+                #     users += 1
+                #     user_attr = np.stack([users,attrs],axis=1)
+                #     user_attr_prob  = np.concatenate([user_attr,probs],axis=1)
+                #     predictions.append(user_attr_prob)
+                # else:
                 pred_emb_te = self._collect_final_time_step(batch_lengths,aux_info,h)
                 predictions.append(pred_emb_te)
         

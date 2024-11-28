@@ -15,13 +15,12 @@ import numpy as np
 import pandas as pd
 from torch import optim
 from tqdm import tqdm
+from itertools import product
+import lightgbm as lgb
 from nn_model.product_lstm import ProdLSTM,ProdLSTMV1
 from utils.utils import Timer,logger,pad,pickle_save_load,TMP_PATH
 from torch.cuda.amp import autocast,GradScaler
-from utils.loss import NextBasketLoss,SeqLogLoss
 from itertools import chain
-from sklearn.model_selection import train_test_split
-from create_merged_data import data_processing
 from embedding.trainer import Trainer
 
 convert_index_cuda = lambda x:torch.from_numpy(x).long().cuda()
@@ -50,11 +49,9 @@ def product_data_maker(data,max_len,prod_aisle_dict,prod_dept_dict,mode='train')
             user,products = row['user_id'],row['product_id']
             reorders = row['reordered']
             temporal_cols = [row['order_dow'],row['order_hour_of_day'],row['time_zone'],row['days_since_prior_order']]
-            # days_interval = row['days_since_prior_order']
             if row['eval_set'] == 'test' and mode != 'test':
                 products = products[:-1]
                 reorders = reorders[:-1]
-                # days_interval = days_interval[:-1]
                 for idx,col_data in enumerate(temporal_cols):
                     col_data = col_data[:-1]
                     temporal_cols[idx] = col_data
@@ -73,11 +70,11 @@ def product_data_maker(data,max_len,prod_aisle_dict,prod_dept_dict,mode='train')
             reorders_ = [list(map(int,reorder.split('_'))) for reorder in reorders_]
             all_products = list(set(chain.from_iterable([product.split('_') for product in products])))
             
-            for product in all_products:
-                label = -1 if mode == 'test' else product in next_products
-                aisle = prod_aisle_dict[int(product)]
-                dept = prod_dept_dict[int(product)]
-                base_info.append([user,int(product),aisle,dept])
+            for prod in all_products:
+                label = -1 if mode == 'test' else prod in next_products
+                aisle = prod_aisle_dict[int(prod)]
+                dept = prod_dept_dict[int(prod)]
+                base_info.append([user,int(prod),aisle,dept])
                 
                 reorder_cnt = 0
                 in_order_ord = []
@@ -89,8 +86,8 @@ def product_data_maker(data,max_len,prod_aisle_dict,prod_dept_dict,mode='train')
                 reorder_ord = []
                 reorder_ratio_ord = []
                 for idx,(order,reorder) in enumerate(zip(orders,reorders_)):
-                    in_order = int(product in order)
-                    index_in_order = order.index(product) + 1 if in_order else 0
+                    in_order = int(prod in order)
+                    index_in_order = order.index(prod) + 1 if in_order else 0
                     order_size = len(order)
                     index_order_ratio = index_in_order / order_size
                     reorder_cnt += int(in_order)
@@ -120,7 +117,7 @@ def product_data_maker(data,max_len,prod_aisle_dict,prod_dept_dict,mode='train')
                 if missing_seq > 0:
                     missing_data = np.zeros([missing_seq,prod_info.shape[1]],dtype=np.float16)
                     prod_info = np.concatenate([prod_info,missing_data])
-                data_dict[(user,int(product))] = (prod_info,length)
+                data_dict[(user,int(prod))] = (prod_info,length)
             
             base_info.append([user,0,0,0])
             reorder_cnt = 0
@@ -238,9 +235,9 @@ class ProductTrainer(Trainer):
         self.data_maker = product_data_maker
         self.emb_list = ['user_id','product_id','aisle_id','department_id']
         self.max_index_info = [data[col].max()+1 for col in self.emb_list] + [self.max_len]
-        prod_aisle_dict = self.prod_data.set_index('product_id')['aisle_id'].to_dict()
+        self.prod_aisle_dict = self.prod_data.set_index('product_id')['aisle_id'].to_dict()
         prod_dept_dict = self.prod_data.set_index('product_id')['department_id'].to_dict()
-        self.data_maker_dicts = [prod_aisle_dict,prod_dept_dict]
+        self.data_maker_dicts = [self.prod_aisle_dict,prod_dept_dict]
     
     def build_data_dl(self,mode):
         agg_data = self.build_agg_data('product_id')
@@ -254,6 +251,89 @@ class ProductTrainer(Trainer):
         self.agg_data = agg_data
         return [user_prod,data_dict,temp_dict],prod_dim
     
+    def evaluate_or_submit(self,mode='evaluate',agg_data=None):
+        self.agg_data = agg_data
+        params = {
+            'task': 'train',
+            'boosting_type': 'gbdt',
+            'objective': 'binary',
+            'metric': {'binary_logloss'},
+            'learning_rate': .05,
+            'num_leaves': 32,
+            'max_depth': 12,
+            'feature_fraction': 0.25,
+            'bagging_fraction': 0.9,
+            'bagging_freq': 2,
+        }
+        
+        suffix = [s+'.npy' for s in ['eval','pred']]
+        prefix = ['user_product','user_aisle']
+        files = ['_'.join(comb) for comb in product(prefix,suffix)]
+        checks = [os.path.exists(os.path.join('metadata',file)) for file in files]
+        assert np.all(checks),'all the eval and pred file of both user_product and user_aisle must be saved'
+        
+        data = [np.load(os.path.join('metadata',file)) for file in files]
+        user_prod_eval,user_prod_pred,user_aisle_eval,user_aisle_pred = data
+        user_prod_eval[:,1] -= 1;user_prod_pred[:,1] -= 1
+        label = user_prod_eval[:,-1]
+        user_prod_eval = np.delete(user_prod_eval,-1,axis=1)
+        prod_feat_name = [f'prodf_{i}' for i in range(51)]
+        user_prod_eval = pd.DataFrame(user_prod_eval,columns=['user_id','product_id']+prod_feat_name)
+        user_prod_eval['aisle_id'] = user_prod_eval['product_id'].map(self.prod_aisle_dict)
+        aisle_feat_name = [f'aislef_{i}' for i in range(51)]
+        user_aisle_eval = pd.DataFrame(user_aisle_eval,columns=['user_id','aisle_id']+aisle_feat_name)
+        data_tr = user_prod_eval.merge(user_aisle_eval,how='left',on=['user_id','aisle_id'])
+        del data_tr['aisle_id'],data_tr['user_id'],data_tr['product_id']
+        data_tr = np.array(data_tr).astype(np.float32)
+        
+        user_prod_pred = pd.DataFrame(user_prod_pred,columns=['user_id','product_id']+prod_feat_name)
+        user_prod_pred['aisle_id'] = user_prod_pred['product_id'].map(self.prod_aisle_dict)
+        user_aisle_pred = pd.DataFrame(user_aisle_pred,columns=['user_id','aisle_id']+aisle_feat_name)
+        data_eval = user_prod_pred.merge(user_aisle_pred,how='left',on=['user_id','aisle_id'])
+        del data_eval['aisle_id']
+        user_prod_preds = np.array(data_eval[['user_id','product_id']]).astype(np.int32)
+        data_eval = np.array(data_eval.iloc[:,2:])
+        
+        x_train = lgb.Dataset(data_tr,label=label)
+        model = lgb.train(params,x_train,num_boost_round=500)
+        predictions = model.predict(data_eval)
+        predictions = np.concatenate([user_prod_preds,predictions.reshape(-1,1)],axis=1)
+        predictions = pd.DataFrame(predictions,columns=['user_id','product_id','predictions'])
+        if mode == 'submit':
+            predictions.to_csv('metadata/user_product_prob.csv',index=False)
+            return predictions
+        
+        lagging = self.lagging if np.sign(self.lagging) < 0 else -self.lagging
+        index = lagging - 1
+        agg_data_te = self.agg_data[self.agg_data['eval_set']=='test']
+        rows = tqdm(agg_data_te.iterrows(),total=agg_data_te.shape[0],desc='collecting label for evaluation')
+        user_prods = []
+        for _,row in rows:
+            user,prod = row['user_id'],row['product_id']
+            reorder = row['reordered']
+            prod = prod[index]
+            reorder = reorder[index]
+            reorder = list(map(int,reorder.split('_')))
+            products = np.array(list(map(int,prod.split('_'))))
+            users = np.array([user] * len(products))
+            label = np.array([1] * len(products))
+            if sum(reorder) == 0:
+                products = np.append(products,0)
+                users = np.append(users,user)
+                label = np.append(label,1)
+            user_prod = np.stack([users,products,label],axis=1)
+            user_prods.append(user_prod)
+        user_prods = np.concatenate(user_prods)
+        user_prods = pd.DataFrame(user_prods,columns=['user_id','product_id','label'])
+        predictions = user_prods.merge(predictions,how='outer',on=['user_id','product_id'])
+        predictions[['label','predictions']] = predictions[['label','predictions']].fillna(0)
+        y_true,y_pred = np.array(predictions['label']),np.array(predictions['predictions'])
+        
+        from sklearn.metrics import log_loss
+        loss = log_loss(y_true,y_pred)
+        logger.info(f'lightgbm prediction loss:{loss:.05f}')
+        
+    
     def train(self,use_amp=False,use_extra_params=False):
         core_info_tr,prod_dim = self.build_data_dl(mode='train')
         model,optimizer,lr_scheduler,start_epoch,best_loss,checkpoint_path = super().train(use_amp=use_amp)
@@ -264,7 +344,7 @@ class ProductTrainer(Trainer):
             aisle_param_dict = pickle_save_load(aisle_param_path,mode='load')
             emb_list = ['user_id','product_id','department_id']
             self.input_dim = self.temp_dim + prod_dim + len(emb_list) * 50 + 21
-            max_index_info = [data[col].max() for col in emb_list] + [self.max_len]
+            max_index_info = [self.data[col].max() for col in emb_list] + [self.max_len]
             model = ProdLSTMV1(self.input_dim,self.output_dim,*max_index_info,aisle_param_dict).cuda()
             optimizer = self.optimizer(model.parameters(),lr=self.learning_rate)
             lr_scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer,mode='min',patience=0,factor=0.2,verbose=True)
@@ -370,46 +450,18 @@ if __name__ == '__main__':
                                     early_stopping=2,
                                     warm_start=False,
                                     optim_option='adam')
-    product_trainer.train(use_amp=False,use_extra_params=False)
-    product_trainer.predict(save_name='user_product_pred')
-    # predict(*outputs,
-    #         output_dim=100,
-    #         emb_dim=50)
-    
-        
-    # from collections import ChainMap
-    # from functools import partial
-    # import multiprocessing
-    # prod_aisle_dict = products.set_index('product_id')['aisle_id'].to_dict()
-    # prod_dept_dict = products.set_index('product_id')['department_id'].to_dict()
-    
-    # agg_data = data_processing(z,save=False)
-    # func = partial(data_for_training,max_len=100,prod_aisle_dict=prod_aisle_dict,prod_dept_dict=prod_dept_dict)
-    # chunks = []
-    # cpu_cnt = 8
-    # chunk_size = agg_data.shape[0] // cpu_cnt
-    # for i in range(cpu_cnt-1):
-    #     start = i * chunk_size
-    #     end = (i+1) * chunk_size
-    #     chunks.append(agg_data.iloc[start:end])
-    # chunks.append(agg_data.iloc[end:])
-    # with Timer():
-    #     with multiprocessing.Pool(cpu_cnt) as pool:
-    #         results = pool.map(func,chunks)
-    #         user_prod,data_dict,temporal_info_dict,feature_dims = zip(*results)
-    #         user_prod = np.concatenate(user_prod)
-    #         print(user_prod,user_prod.shape)
-    #         temporal_info_dict = dict(ChainMap(*temporal_info_dict))
-    #         print(temporal_info_dict)
-    #         data_dict = dict(ChainMap(*data_dict))
-    #         print(data_dict)
-    #         feature_dim = feature_dims[0]
-    #         print(feature_dim)
+    # product_trainer.train(use_amp=False,use_extra_params=False)
+    # product_trainer.predict(save_name='user_product_pred')
+    agg_data = pd.read_pickle('data/tmp/user_product_info.csv')
+    product_trainer.evaluate_or_submit(mode='submit',agg_data=agg_data)
 
 
 
 #%%
 # import pandas as  pd
+# from tqdm import tqdm
+# from itertools import product
+# import lightgbm as lgb
 # import numpy as np
 # import torch
 # import pickle
@@ -417,7 +469,18 @@ if __name__ == '__main__':
 # z = data.iloc[:100000]
 # gb = z.groupby('order_id')
 # dfs, order_ids = zip(*[(df, key) for key, df in gb])
-# p = np.load('metadata/user_product_prob.npy')
+# p = np.load('metadata/user_product_eval.npy')
 # checkpoint = torch.load('checkpoint/ProdLSTM_best_checkpoint.pth')
-# with open('data/tmp/user_prod_test.pkl','rb') as f:
+# with open('data/tmp/user_prod_train.pkl','rb') as f:
 #     user_prod = pickle.load(f)
+# from itertools import product
+# import os
+# os.path.exists('metadata/user_aisle_eval.npy')
+# agg_data = pd.read_pickle('data/tmp/user_product_info.csv')
+# user_aisle_pred = np.load('metadata/user_aisle_pred.npy')
+# x = np.random.rand(32,10)
+# np.array(pd.DataFrame(x))
+# k[['label','prediction']] = k[['label','prediction']].fillna(0)
+
+# checkpoint = torch.load('checkpoint/AisleLSTM_best_checkpoint.pth')
+# sub = pd.read_csv('data/sample_submission.csv')

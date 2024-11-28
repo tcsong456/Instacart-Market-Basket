@@ -92,8 +92,7 @@ if __name__ == '__main__':
     data = pd.read_csv('data/orders_info.csv')
     test_data = data[data['eval_set']=='test']
 
-    predictions = np.load('metadata/user_product_prob.npy')
-    predictions = pd.DataFrame(predictions,columns=['user_id','product_id','predictions'])
+    predictions = pd.read_csv('metadata/user_product_prob.csv')
     predictions['user_id'] = predictions['user_id'].astype(np.int32)
     predictions['product_id'] = predictions['product_id'].astype(np.int32)
     user_order_dict = test_data.set_index('user_id')['order_id'].to_dict()
@@ -102,8 +101,6 @@ if __name__ == '__main__':
     pred_pred = predictions.groupby('order_id')['predictions'].apply(list)
     preds = pd.concat([pred_prd,pred_pred],axis=1).reset_index()
     submissions = make_submissions(preds)
-    submissions.to_csv('metadata/submissions.csv')
+    submissions.to_csv('metadata/submissions.csv',index=False)
 
 #%%
-
-
