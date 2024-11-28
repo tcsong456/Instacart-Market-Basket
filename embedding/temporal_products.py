@@ -173,7 +173,6 @@ def product_data_maker(data,max_len,prod_aisle_dict,prod_dept_dict,mode='train')
     
     return user_prod,data_dict,temp_dict,feature_dim
 
-
 def product_dataloader(inp,
                        data_dict,
                        temp_dict,
@@ -236,8 +235,9 @@ class ProductTrainer(Trainer):
         self.emb_list = ['user_id','product_id','aisle_id','department_id']
         self.max_index_info = [data[col].max()+1 for col in self.emb_list] + [self.max_len]
         self.prod_aisle_dict = self.prod_data.set_index('product_id')['aisle_id'].to_dict()
-        prod_dept_dict = self.prod_data.set_index('product_id')['department_id'].to_dict()
-        self.data_maker_dicts = [self.prod_aisle_dict,prod_dept_dict]
+        self.prod_dept_dict = self.prod_data.set_index('product_id')['department_id'].to_dict()
+        self.data_maker_dicts = [self.prod_aisle_dict,self.prod_dept_dict]
+        self.attr = 'product'
     
     def build_data_dl(self,mode):
         agg_data = self.build_agg_data('product_id')
@@ -249,7 +249,7 @@ class ProductTrainer(Trainer):
             temp_dict[key] = value
         self.input_dim = self.temp_dim + prod_dim + len(self.emb_list) * 50
         self.agg_data = agg_data
-        return [user_prod,data_dict,temp_dict],prod_dim
+        return [user_prod,data_dict,temp_dict]
     
     def evaluate_or_submit(self,mode='evaluate'):
         params = {
@@ -260,36 +260,49 @@ class ProductTrainer(Trainer):
             'learning_rate': .05,
             'num_leaves': 32,
             'max_depth': 12,
-            'feature_fraction': 0.25,
+            'feature_fraction': 0.35,
             'bagging_fraction': 0.9,
             'bagging_freq': 2,
         }
-        
+        if mode == 'evaluate':
+            addr = 'evaluation'
+        else:
+            addr = ''
         suffix = [s+'.npy' for s in ['eval','pred']]
-        prefix = ['user_product','user_aisle']
+        prefix = ['user_product','user_aisle','user_dept']
         files = ['_'.join(comb) for comb in product(prefix,suffix)]
-        checks = [os.path.exists(os.path.join('metadata',file)) for file in files]
+        checks = [os.path.exists(os.path.join(f'metadata/{addr}',file)) for file in files]
         assert np.all(checks),'all the eval and pred file of both user_product and user_aisle must be saved'
         
-        data = [np.load(os.path.join('metadata',file)) for file in files]
-        user_prod_eval,user_prod_pred,user_aisle_eval,user_aisle_pred = data
+        data = [np.load(os.path.join(f'metadata/{addr}',file)) for file in files]
+        user_prod_eval,user_prod_pred,user_aisle_eval,user_aisle_pred,user_dept_eval,user_dept_pred = data
+        #user_aisle_eval = user_aisle_eval[:,:-1]
+        user_dept_eval = user_dept_eval[:,:-1]
         user_prod_eval[:,1] -= 1;user_prod_pred[:,1] -= 1
         label = user_prod_eval[:,-1]
         user_prod_eval = np.delete(user_prod_eval,-1,axis=1)
         prod_feat_name = [f'prodf_{i}' for i in range(51)]
         user_prod_eval = pd.DataFrame(user_prod_eval,columns=['user_id','product_id']+prod_feat_name)
         user_prod_eval['aisle_id'] = user_prod_eval['product_id'].map(self.prod_aisle_dict)
+        user_prod_eval['department_id'] = user_prod_eval['product_id'].map(self.prod_dept_dict)
         aisle_feat_name = [f'aislef_{i}' for i in range(51)]
         user_aisle_eval = pd.DataFrame(user_aisle_eval,columns=['user_id','aisle_id']+aisle_feat_name)
-        data_tr = user_prod_eval.merge(user_aisle_eval,how='left',on=['user_id','aisle_id'])
-        del data_tr['aisle_id'],data_tr['user_id'],data_tr['product_id']
+        dept_feat_name = [f'deptf_{i}' for i in range(51)]
+        user_dept_eval = pd.DataFrame(user_dept_eval,columns=['user_id','department_id']+dept_feat_name)
+        data_tr = user_prod_eval.merge(user_aisle_eval,how='left',on=['user_id','aisle_id']).merge(
+                                       user_dept_eval,how='left',on=['user_id','department_id'])
+        del data_tr['aisle_id'],data_tr['user_id'],data_tr['product_id'],data_tr['department_id']
         data_tr = np.array(data_tr).astype(np.float32)
         
         user_prod_pred = pd.DataFrame(user_prod_pred,columns=['user_id','product_id']+prod_feat_name)
         user_prod_pred['aisle_id'] = user_prod_pred['product_id'].map(self.prod_aisle_dict)
+        user_prod_pred['department_id'] = user_prod_pred['product_id'].map(self.prod_dept_dict)
         user_aisle_pred = pd.DataFrame(user_aisle_pred,columns=['user_id','aisle_id']+aisle_feat_name)
-        data_eval = user_prod_pred.merge(user_aisle_pred,how='left',on=['user_id','aisle_id'])
-        del data_eval['aisle_id']
+        user_dept_pred = pd.DataFrame(user_dept_pred,columns=['user_id','department_id']+dept_feat_name)
+        data_eval = user_prod_pred.merge(user_aisle_pred,how='left',on=['user_id','aisle_id']).merge(user_dept_pred,
+                                                                                                     how='left',on=['user_id','department_id'])
+        del data_eval['aisle_id'],data_eval['department_id']
+
         user_prod_preds = np.array(data_eval[['user_id','product_id']]).astype(np.int32)
         data_eval = np.array(data_eval.iloc[:,2:])
         
@@ -304,6 +317,10 @@ class ProductTrainer(Trainer):
         
         lagging = self.lagging if np.sign(self.lagging) < 0 else -self.lagging
         index = lagging - 1
+        try:
+            self.agg_data
+        except AttributeError:
+            self.agg_data = self.build_agg_data('product_id')
         agg_data_te = self.agg_data[self.agg_data['eval_set']=='test']
         rows = tqdm(agg_data_te.iterrows(),total=agg_data_te.shape[0],desc='collecting label for evaluation')
         user_prods = []
@@ -331,96 +348,6 @@ class ProductTrainer(Trainer):
         from sklearn.metrics import log_loss
         loss = log_loss(y_true,y_pred)
         logger.info(f'lightgbm prediction loss:{loss:.05f}')
-        
-    
-    def train(self,use_amp=False,ev=''):
-        core_info_tr,prod_dim = self.build_data_dl(mode='train')
-        model,optimizer,lr_scheduler,start_epoch,best_loss,checkpoint_path = super().train(use_amp=use_amp)
-        self.checkpoint_path = checkpoint_path
-            
-        no_improvement = 0
-        for epoch in range(start_epoch,self.epochs):
-            total_loss,cur_iter = 0,1
-            model.train()
-            train_dl = self.dataloader(*core_info_tr,self.batch_size,True,True)
-            train_batch_loader = tqdm(train_dl,total=core_info_tr[0].shape[0]//self.batch_size,desc=f'training next product basket at epoch:{epoch}',
-                                      dynamic_ncols=True,leave=False)
-            
-            for batch,batch_lengths,temps,*aux_info in train_batch_loader:
-                batch,label = batch[:,:,:-1],batch[:,:,-1]
-                label = torch.from_numpy(label).to('cuda')
-                batch = torch.from_numpy(batch).cuda()
-                temps = [torch.stack(temp) for temp in temps]
-                aux_info = [convert_index_cuda(b) for b in aux_info]
-                
-                optimizer.zero_grad()
-                if use_amp:
-                    scaler = GradScaler()
-                    with autocast():
-                        h,preds = model(batch,*temps)
-                        loss = self.loss_fn_tr(preds,label,batch_lengths)
-                    scaler.scale(loss).backward()
-                    scaler.step(optimizer)
-                    scaler.update()
-                else:
-                    h,preds = model(batch,*aux_info,*temps)
-                    loss = self.loss_fn_tr(preds,label,batch_lengths)
-                    loss.backward()
-                    optimizer.step()
-
-                cur_loss = loss.item()
-                total_loss += cur_loss
-                avg_loss = total_loss / cur_iter
-                    
-                cur_iter += 1
-                train_batch_loader.set_postfix(train_loss=f'{avg_loss:.05f}')
-            
-            if epoch % self.eval_epoch == 0:
-                pred_embs_eval = []
-                model.eval()
-                total_loss_val,ite = 0,1
-                eval_dl = self.dataloader(*core_info_tr,1024,False,False)
-                eval_batch_loader = tqdm(eval_dl,total=core_info_tr[0].shape[0]//1024,desc='evaluating next order basket',
-                                          leave=False,dynamic_ncols=True)
-                
-                with torch.no_grad():
-                    for batch,batch_lengths,temps,*aux_info in eval_batch_loader:
-                        batch,label = batch[:,:,:-1],batch[:,:,-1]
-                        batch = torch.from_numpy(batch).cuda()
-                        label = torch.from_numpy(label).to('cuda')
-                        temps = [torch.stack(temp) for temp in temps]
-                        aux_info = [convert_index_cuda(b) for b in aux_info]
-                        
-                        h,preds = model(batch,*aux_info,*temps)
-                        loss = self.loss_fn_te(preds,label,batch_lengths)
-                        
-                        total_loss_val += loss.item()
-                        avg_loss_val = total_loss_val / ite
-                        ite += 1
-                        eval_batch_loader.set_postfix(eval_loss=f'{avg_loss_val:.05f}')
-                        
-                        pred_emb_val = self._collect_final_time_step(batch_lengths,aux_info,h,label)
-                        pred_embs_eval.append(pred_emb_val)
-                lr_scheduler.step(avg_loss_val)
-                pred_embs_eval = np.concatenate(pred_embs_eval).astype(np.float32)
-                
-                if avg_loss_val < best_loss:
-                    best_loss = avg_loss_val
-                    checkpoint = {'best_epoch':epoch,
-                                  'best_loss':best_loss,
-                                  'model_state_dict':model.state_dict(),
-                                  'optimizer_state_dict':optimizer.state_dict()}
-                    os.makedirs('checkpoint',exist_ok=True)
-                    torch.save(checkpoint,checkpoint_path)
-                    np.save(f'metadata/{ev}user_product_eval.npy',pred_embs_eval)
-                    no_improvement = 0
-                else:
-                    no_improvement += 1
-                    
-                if no_improvement == self.early_stopping:
-                    logger.info('early stopping is trggered,the model has stopped improving')
-                    return
-                
 
 
 if __name__ == '__main__':
@@ -434,14 +361,14 @@ if __name__ == '__main__':
                                     eval_epoch=1,
                                     epochs=10,
                                     learning_rate=0.002,
-                                    lagging=2,
+                                    lagging=1,
                                     batch_size=512,
                                     early_stopping=2,
                                     warm_start=False,
                                     optim_option='adam')
-    product_trainer.train(use_amp=False,ev='evaluation/')
-    product_trainer.predict(save_name='user_product_pred',ev='evaluation/')
-    # product_trainer.evaluate_or_submit(mode='submit')
+    # product_trainer.train(use_amp=False,ev='evaluation/')
+    # product_trainer.predict(save_name='user_product_pred',ev='evaluation/')
+    product_trainer.evaluate_or_submit(mode='submit')
 
 
 
@@ -472,3 +399,8 @@ if __name__ == '__main__':
 
 # checkpoint = torch.load('checkpoint/AisleLSTM_best_checkpoint.pth')
 # sub = pd.read_csv('data/sample_submission.csv')
+# suffix = [s+'.npy' for s in ['eval','pred']]
+# prefix = ['user_product','user_aisle','user_dept']
+# files = ['_'.join(comb) for comb in product(prefix,suffix)]
+# p = np.load('metadata/user_dept_pred.npy')
+# os.path.exists(os.path.join('metadata/','user_aisle_eval.npy'))

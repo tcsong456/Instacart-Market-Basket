@@ -13,6 +13,7 @@ import pandas as pd
 from tqdm import tqdm
 from torch import optim
 from utils.utils import logger
+from torch.cuda.amp import autocast,GradScaler
 from create_merged_data import data_processing
 from utils.loss import NextBasketLoss,SeqLogLoss
 
@@ -73,7 +74,44 @@ class Trainer:
     def build_data_dl(self,mode):
         raise NotImplementedError('subclass must implement this method')
     
-    def train(self,use_amp=False):
+    # def train(self,use_amp=False):
+    #     model = self.model(self.input_dim,self.output_dim,*self.max_index_info).to('cuda')
+    #     model_name = model.__class__.__name__
+    #     optimizer = self.optimizer(model.parameters(),lr=self.learning_rate)
+    #     lr_scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer,mode='min',patience=0,factor=0.2,verbose=True)
+        
+    #     checkpoint_path = get_checkpoint_path(model_name)
+    #     checkpoint_path = f'checkpoint/{checkpoint_path}'
+    #     if self.warm_start:
+    #         checkpoint = torch.load(checkpoint_path)
+    #         model.load_state_dict(checkpoint['model_state_dict'])
+    #         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    #         start_epoch = checkpoint['best_epoch']
+    #         start_epoch += 1
+    #         best_loss = checkpoint['best_loss']
+    #         logger.info(f'warm starting training from best epoch:{start_epoch} and best loss:{best_loss:.5f}')
+    #     else:
+    #         start_epoch = 0
+    #         best_loss = np.inf
+        
+    #     return model,optimizer,lr_scheduler,start_epoch,best_loss,checkpoint_path
+    
+    def _collect_final_time_step(self,lengths,aux_info,time_steps,label=None):
+        batch_lengths = torch.Tensor(lengths).reshape(-1,1).unsqueeze(-1).expand(-1,1,time_steps.shape[-1]).long().cuda() - self.lagging
+        pred_emb = torch.gather(time_steps,index=batch_lengths,dim=1).squeeze()
+        pred_emb = pred_emb.cpu().numpy()
+        user_attr = torch.stack(aux_info[:2],dim=1).cpu().numpy() + 1
+        pred_emb = np.concatenate([user_attr,pred_emb],axis=1)
+        if label is not None:
+            index = torch.Tensor(lengths).reshape(-1,1).long().cuda() - self.lagging
+            label = torch.gather(label,dim=1,index=index)
+            label = label.cpu().numpy()
+            pred_emb = np.concatenate([pred_emb,label],axis=1)
+        
+        return pred_emb
+    
+    def train(self,use_amp=False,ev=''):
+        core_info_tr = self.build_data_dl(mode='train')
         model = self.model(self.input_dim,self.output_dim,*self.max_index_info).to('cuda')
         model_name = model.__class__.__name__
         optimizer = self.optimizer(model.parameters(),lr=self.learning_rate)
@@ -92,22 +130,89 @@ class Trainer:
         else:
             start_epoch = 0
             best_loss = np.inf
-        
-        return model,optimizer,lr_scheduler,start_epoch,best_loss,checkpoint_path
-    
-    def _collect_final_time_step(self,lengths,aux_info,time_steps,label=None):
-        batch_lengths = torch.Tensor(lengths).reshape(-1,1).unsqueeze(-1).expand(-1,1,time_steps.shape[-1]).long().cuda() - self.lagging
-        pred_emb = torch.gather(time_steps,index=batch_lengths,dim=1).squeeze()
-        pred_emb = pred_emb.cpu().numpy()
-        user_attr = torch.stack(aux_info[:2],dim=1).cpu().numpy() + 1
-        pred_emb = np.concatenate([user_attr,pred_emb],axis=1)
-        if label is not None:
-            index = torch.Tensor(lengths).reshape(-1,1).long().cuda() - self.lagging
-            label = torch.gather(label,dim=1,index=index)
-            label = label.cpu().numpy()
-            pred_emb = np.concatenate([pred_emb,label],axis=1)
-        
-        return pred_emb
+        self.checkpoint_path = checkpoint_path
+            
+        no_improvement = 0
+        for epoch in range(start_epoch,self.epochs):
+            total_loss,cur_iter = 0,1
+            model.train()
+            train_dl = self.dataloader(*core_info_tr,self.batch_size,True,True)
+            train_batch_loader = tqdm(train_dl,total=core_info_tr[0].shape[0]//self.batch_size,desc=f'training next {self.attr} basket at epoch:{epoch}',dynamic_ncols=True,leave=False)
+            
+            for batch,batch_lengths,temps,*aux_info in train_batch_loader:
+                batch,label = batch[:,:,:-1],batch[:,:,-1]
+                label = torch.from_numpy(label).to('cuda')
+                batch = torch.from_numpy(batch).cuda()
+                temps = [torch.stack(temp) for temp in temps]
+                aux_info = [convert_index_cuda(b) for b in aux_info]
+                
+                optimizer.zero_grad()
+                if use_amp:
+                    scaler = GradScaler()
+                    with autocast():
+                        h,preds = model(batch,*temps)
+                        loss = self.loss_fn_tr(preds,label,batch_lengths)
+                    scaler.scale(loss).backward()
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    h,preds = model(batch,*aux_info,*temps)
+                    loss = self.loss_fn_tr(preds,label,batch_lengths)
+                    loss.backward()
+                    optimizer.step()
+
+                cur_loss = loss.item()
+                total_loss += cur_loss
+                avg_loss = total_loss / cur_iter
+                    
+                cur_iter += 1
+                train_batch_loader.set_postfix(train_loss=f'{avg_loss:.05f}')
+            
+            if epoch % self.eval_epoch == 0:
+                pred_embs_eval = []
+                model.eval()
+                total_loss_val,ite = 0,1
+                eval_dl = self.dataloader(*core_info_tr,1024,False,False)
+                eval_batch_loader = tqdm(eval_dl,total=core_info_tr[0].shape[0]//1024,desc='evaluating next order basket',
+                                          leave=False,dynamic_ncols=True)
+                
+                with torch.no_grad():
+                    for batch,batch_lengths,temps,*aux_info in eval_batch_loader:
+                        batch,label = batch[:,:,:-1],batch[:,:,-1]
+                        batch = torch.from_numpy(batch).cuda()
+                        label = torch.from_numpy(label).to('cuda')
+                        temps = [torch.stack(temp) for temp in temps]
+                        aux_info = [convert_index_cuda(b) for b in aux_info]
+                        
+                        h,preds = model(batch,*aux_info,*temps)
+                        loss = self.loss_fn_te(preds,label,batch_lengths)
+                        
+                        total_loss_val += loss.item()
+                        avg_loss_val = total_loss_val / ite
+                        ite += 1
+                        eval_batch_loader.set_postfix(eval_loss=f'{avg_loss_val:.05f}')
+                        
+                        pred_emb_val = self._collect_final_time_step(batch_lengths,aux_info,h,label)
+                        pred_embs_eval.append(pred_emb_val)
+                lr_scheduler.step(avg_loss_val)
+                pred_embs_eval = np.concatenate(pred_embs_eval).astype(np.float32)
+                
+                if avg_loss_val < best_loss:
+                    best_loss = avg_loss_val
+                    checkpoint = {'best_epoch':epoch,
+                                  'best_loss':best_loss,
+                                  'model_state_dict':model.state_dict(),
+                                  'optimizer_state_dict':optimizer.state_dict()}
+                    os.makedirs('checkpoint',exist_ok=True)
+                    torch.save(checkpoint,checkpoint_path)
+                    np.save(f'metadata/{ev}user_{self.attr}_eval.npy',pred_embs_eval)
+                    no_improvement = 0
+                else:
+                    no_improvement += 1
+                    
+                if no_improvement == self.early_stopping:
+                    logger.info('early stopping is trggered,the model has stopped improving')
+                    return
     
     def predict(self,save_name,ev=''):
         predict_data = self.agg_data[self.agg_data['eval_set']=='test']
@@ -158,6 +263,5 @@ class Trainer:
 
 
 #%%
-
 
 

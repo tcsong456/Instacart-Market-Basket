@@ -6,7 +6,6 @@ Created on Sat Nov 16 11:50:57 2024
 """
 import gc
 import os
-os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 import torch
@@ -208,13 +207,13 @@ def aisle_data_maker(agg_data,max_len,aisle_dept_dict,mode='train'):
                 total_cnts += cur_cnt
                 cumsum_cnt_ratio = total_cnts / (idx + 1)
                 reorder_total = sum(reorder_aisle)
-                reorder_ratio = reorder_total / (idx + 1)
+                total_reorder_sums += reorder_total
+                reorder_ratio = total_reorder_sums / (idx + 1)
                 reorder_basket_ratio = reorder_total / order_size
                 cur_seens = seen_aisles & set(order_aisle)
                 aisle_var_ord.append(len(cur_seens)/(idx+1))
                 seen_aisles |= set(order_aisle)
                 total_sizes += order_size
-                total_reorder_sums += reorder_total
                 reorder_total_ratio = total_reorder_sums / total_sizes
 
                 in_order_ord.append(in_order)
@@ -313,6 +312,7 @@ class AisleTrainer(Trainer):
         self.dataloader = aisle_dataloader
         self.data_maker = aisle_data_maker
         self.model = AisleLSTM
+        self.attr = 'aisle'
         
         self.emb_list = ['user_id','aisle_id','department_id']
         self.max_index_info = [data[col].max() for col in self.emb_list] + [self.max_len]
@@ -330,94 +330,6 @@ class AisleTrainer(Trainer):
         self.input_dim = self.temp_dim + aisle_dim + len(self.emb_list) * 50
         self.agg_data = agg_data
         return [user_aisle,data_dict,temp_dict]
-    
-    def train(self,use_amp=False,ev=''):
-        core_info_tr= self.build_data_dl(mode='train')
-        model,optimizer,lr_scheduler,start_epoch,best_loss,checkpoint_path = super().train(use_amp=use_amp)
-        self.checkpoint_path = checkpoint_path
-        
-        no_improvement = 0
-        for epoch in range(start_epoch,self.epochs):
-            total_loss,cur_iter = 0,1
-            model.train()
-            train_dl = self.dataloader(*core_info_tr,self.batch_size,True,True)
-            train_batch_loader = tqdm(train_dl,total=core_info_tr[0].shape[0]//self.batch_size,desc=f'training next aisle basket at epoch:{epoch}',
-                                      dynamic_ncols=True,leave=False)
-            for batch,batch_lengths,temps,*aux_info in train_batch_loader:
-                batch,label = batch[:,:,:-1],batch[:,:,-1]
-                label = torch.from_numpy(label).to('cuda')
-                batch = torch.from_numpy(batch).cuda()
-                temps = [torch.stack(temp) for temp in temps]
-                aux_info = [convert_index_cuda(b) for b in aux_info]
-                
-                optimizer.zero_grad()
-                if use_amp:
-                    scaler = GradScaler()
-                    with autocast():
-                        h,preds = model(batch,*aux_info,*temps)
-                        loss = self.loss_fn_tr(preds,label,batch_lengths)
-                    scaler.scale(loss).backward()
-                    scaler.step(optimizer)
-                    scaler.update()
-                else:
-                    h,preds = model(batch,*aux_info,*temps)
-                    loss = self.loss_fn_tr(preds,label,batch_lengths)
-                    loss.backward()
-                    optimizer.step()
-
-                cur_loss = loss.item()
-                total_loss += cur_loss
-                avg_loss = total_loss / cur_iter
-                    
-                cur_iter += 1
-                train_batch_loader.set_postfix(train_loss=f'{avg_loss:.05f}')
-            
-            if epoch % self.eval_epoch == 0:
-                pred_embs_eval = []
-                eval_dl = self.dataloader(*core_info_tr,1024,False,False)
-                eval_batch_loader = tqdm(eval_dl,total=core_info_tr[0].shape[0]//1024,desc='evaluating next aisle basket',
-                                          leave=False,dynamic_ncols=True)
-                model.eval()
-                total_loss_val,ite = 0,1
-                with torch.no_grad():
-                    for batch,batch_lengths,temps,*aux_info in eval_batch_loader:
-                        batch,label = batch[:,:,:-1],batch[:,:,-1]
-                        batch = torch.from_numpy(batch).cuda()
-                        label = torch.from_numpy(label).to('cuda')
-                        temps = [torch.stack(temp) for temp in temps]
-                        aux_info = [convert_index_cuda(b) for b in aux_info]
-                        
-                        h,preds = model(batch,*aux_info,*temps)
-                        loss = self.loss_fn_te(preds,label,batch_lengths)
-                        
-                        
-                        total_loss_val += loss.item()
-                        avg_loss_val = total_loss_val / ite
-                        ite += 1
-                        eval_batch_loader.set_postfix(eval_loss=f'{avg_loss_val:.05f}')
-                        
-                        pred_emb_val = self._collect_final_time_step(batch_lengths,aux_info,h)
-                        pred_embs_eval.append(pred_emb_val)
-
-                lr_scheduler.step(avg_loss_val)
-                pred_embs_eval = np.concatenate(pred_embs_eval).astype(np.float32)
-                
-                if avg_loss_val < best_loss:
-                    best_loss = avg_loss_val
-                    checkpoint = {'best_epoch':epoch,
-                                  'best_loss':best_loss,
-                                  'model_state_dict':model.state_dict(),
-                                  'optimizer_state_dict':optimizer.state_dict()}
-                    os.makedirs('checkpoint',exist_ok=True)
-                    torch.save(checkpoint,checkpoint_path)
-                    np.save(f'metadata/{ev}user_aisle_eval.npy',pred_embs_eval)
-                    no_improvement = 0
-                else:
-                    no_improvement += 1
-                    
-                if no_improvement == self.early_stopping:
-                    logger.info('early stopping is trggered,the model has stopped improving')
-                    return
     
 if __name__ == '__main__':
     data = pd.read_csv('data/orders_info.csv')
