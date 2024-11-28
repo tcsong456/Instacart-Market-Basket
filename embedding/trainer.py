@@ -109,7 +109,7 @@ class Trainer:
         
         return pred_emb
     
-    def predict(self,save_name):
+    def predict(self,save_name,ev=''):
         predict_data = self.agg_data[self.agg_data['eval_set']=='test']
         data_te = self.data_maker(predict_data,self.max_len,*self.data_maker_dicts,mode='test')
         users,feat_dict,temporal_dict,feat_dim = data_te
@@ -149,7 +149,7 @@ class Trainer:
         
         predictions = np.concatenate(predictions).astype(np.float32)
         os.makedirs('metadata',exist_ok=True)
-        pred_path = f'metadata/{save_name}.npy'
+        pred_path = f'metadata/{ev}{save_name}.npy'
         np.save(pred_path,predictions)
         logger.info(f'predictions saved to {pred_path}')
         return predictions
@@ -158,3 +158,6 @@ class Trainer:
 
 
 #%%
+
+
+

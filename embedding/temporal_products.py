@@ -27,7 +27,7 @@ convert_index_cuda = lambda x:torch.from_numpy(x).long().cuda()
 
 def product_data_maker(data,max_len,prod_aisle_dict,prod_dept_dict,mode='train'):
     suffix = mode + '.pkl'
-    save_path = [path+'_'+suffix for path in ['user_prod','product_data_dict','temporal_dict']]
+    save_path = [path+'_'+suffix for path in ['user_prod','product_data_dict']]
     check_files = np.all([os.path.exists(os.path.join(TMP_PATH,file)) for file in save_path])
     temp_dict = pickle_save_load(os.path.join(TMP_PATH,f'temporal_dict_{suffix}'),mode='load')
     if check_files:
@@ -251,8 +251,7 @@ class ProductTrainer(Trainer):
         self.agg_data = agg_data
         return [user_prod,data_dict,temp_dict],prod_dim
     
-    def evaluate_or_submit(self,mode='evaluate',agg_data=None):
-        self.agg_data = agg_data
+    def evaluate_or_submit(self,mode='evaluate'):
         params = {
             'task': 'train',
             'boosting_type': 'gbdt',
@@ -334,20 +333,10 @@ class ProductTrainer(Trainer):
         logger.info(f'lightgbm prediction loss:{loss:.05f}')
         
     
-    def train(self,use_amp=False,use_extra_params=False):
+    def train(self,use_amp=False,ev=''):
         core_info_tr,prod_dim = self.build_data_dl(mode='train')
         model,optimizer,lr_scheduler,start_epoch,best_loss,checkpoint_path = super().train(use_amp=use_amp)
         self.checkpoint_path = checkpoint_path
-        
-        if use_extra_params:
-            aisle_param_path = 'data/tmp/user_aisle_param.pkl'
-            aisle_param_dict = pickle_save_load(aisle_param_path,mode='load')
-            emb_list = ['user_id','product_id','department_id']
-            self.input_dim = self.temp_dim + prod_dim + len(emb_list) * 50 + 21
-            max_index_info = [self.data[col].max() for col in emb_list] + [self.max_len]
-            model = ProdLSTMV1(self.input_dim,self.output_dim,*max_index_info,aisle_param_dict).cuda()
-            optimizer = self.optimizer(model.parameters(),lr=self.learning_rate)
-            lr_scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer,mode='min',patience=0,factor=0.2,verbose=True)
             
         no_improvement = 0
         for epoch in range(start_epoch,self.epochs):
@@ -423,7 +412,7 @@ class ProductTrainer(Trainer):
                                   'optimizer_state_dict':optimizer.state_dict()}
                     os.makedirs('checkpoint',exist_ok=True)
                     torch.save(checkpoint,checkpoint_path)
-                    np.save('metadata/user_product_eval.npy',pred_embs_eval)
+                    np.save(f'metadata/{ev}user_product_eval.npy',pred_embs_eval)
                     no_improvement = 0
                 else:
                     no_improvement += 1
@@ -445,15 +434,14 @@ if __name__ == '__main__':
                                     eval_epoch=1,
                                     epochs=10,
                                     learning_rate=0.002,
-                                    lagging=1,
+                                    lagging=2,
                                     batch_size=512,
                                     early_stopping=2,
                                     warm_start=False,
                                     optim_option='adam')
-    # product_trainer.train(use_amp=False,use_extra_params=False)
-    # product_trainer.predict(save_name='user_product_pred')
-    agg_data = pd.read_pickle('data/tmp/user_product_info.csv')
-    product_trainer.evaluate_or_submit(mode='submit',agg_data=agg_data)
+    product_trainer.train(use_amp=False,ev='evaluation/')
+    product_trainer.predict(save_name='user_product_pred',ev='evaluation/')
+    # product_trainer.evaluate_or_submit(mode='submit')
 
 
 

@@ -331,7 +331,7 @@ class AisleTrainer(Trainer):
         self.agg_data = agg_data
         return [user_aisle,data_dict,temp_dict]
     
-    def train(self,use_amp=False):
+    def train(self,use_amp=False,ev=''):
         core_info_tr= self.build_data_dl(mode='train')
         model,optimizer,lr_scheduler,start_epoch,best_loss,checkpoint_path = super().train(use_amp=use_amp)
         self.checkpoint_path = checkpoint_path
@@ -410,7 +410,7 @@ class AisleTrainer(Trainer):
                                   'optimizer_state_dict':optimizer.state_dict()}
                     os.makedirs('checkpoint',exist_ok=True)
                     torch.save(checkpoint,checkpoint_path)
-                    np.save('metadata/user_aisle_eval.npy',pred_embs_eval)
+                    np.save(f'metadata/{ev}user_aisle_eval.npy',pred_embs_eval)
                     no_improvement = 0
                 else:
                     no_improvement += 1
@@ -426,7 +426,7 @@ if __name__ == '__main__':
     trainer = AisleTrainer(data,
                             products,
                             output_dim=50,
-                            lagging=1,
+                            lagging=2,
                             learning_rate=0.002,
                             optim_option='adam',
                             batch_size=256,
@@ -434,22 +434,9 @@ if __name__ == '__main__':
                             early_stopping=2,
                             epochs=10,
                             eval_epoch=1)
-    trainer.train(use_amp=False)
-    trainer.predict(save_name='user_aisle_pred')
+    trainer.train(use_amp=False,ev='evaluation/')
+    trainer.predict(save_name='user_aisle_pred',ev='evaluation/')
 
-    # key = int(aisle)
-    # if in_order:
-    #     cnt_key = str(cur_cnt) if cur_cnt < 4 else '4'
-    #     prefix = f'cnt_{cnt_key}'
-    #     suffix = collector.mapping[order_days[idx]]
-    #     next_prob = true_stats[cnt_key][f'{prefix}_0_31'][key]
-    #     next_days_prob = true_stats[cnt_key][f'{prefix}_{suffix}'][key]
-    #     no_buy_days = 0
-    # else:
-    #     no_buy_days += order_days[idx]
-    #     next_prob = fake_stats[key]
-    #     next_days_prob = fake_stats_interval[key].get(no_buy_days,0)
-    # next_prob_ord.append(next_prob),next_days_prob_ord.append(next_days_prob)
 #%%
 # import torch
 # import numpy as np
