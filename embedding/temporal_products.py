@@ -269,7 +269,7 @@ class ProductTrainer(Trainer):
         else:
             addr = ''
         suffix = [s+'.npy' for s in ['eval','pred']]
-        prefix = ['user_product','user_aisle','user_dept']
+        prefix = ['user_product','user_aisle']
         files = ['_'.join(comb) for comb in product(prefix,suffix)]
         checks = [os.path.exists(os.path.join(f'metadata/{addr}',file)) for file in files]
         assert np.all(checks),'all the eval and pred file of both user_product and user_aisle must be saved'
@@ -284,24 +284,17 @@ class ProductTrainer(Trainer):
         prod_feat_name = [f'prodf_{i}' for i in range(51)]
         user_prod_eval = pd.DataFrame(user_prod_eval,columns=['user_id','product_id']+prod_feat_name)
         user_prod_eval['aisle_id'] = user_prod_eval['product_id'].map(self.prod_aisle_dict)
-        user_prod_eval['department_id'] = user_prod_eval['product_id'].map(self.prod_dept_dict)
         aisle_feat_name = [f'aislef_{i}' for i in range(51)]
         user_aisle_eval = pd.DataFrame(user_aisle_eval,columns=['user_id','aisle_id']+aisle_feat_name)
-        dept_feat_name = [f'deptf_{i}' for i in range(51)]
-        user_dept_eval = pd.DataFrame(user_dept_eval,columns=['user_id','department_id']+dept_feat_name)
-        data_tr = user_prod_eval.merge(user_aisle_eval,how='left',on=['user_id','aisle_id']).merge(
-                                       user_dept_eval,how='left',on=['user_id','department_id'])
-        del data_tr['aisle_id'],data_tr['user_id'],data_tr['product_id'],data_tr['department_id']
+        data_tr = user_prod_eval.merge(user_aisle_eval,how='left',on=['user_id','aisle_id'])
+        del data_tr['aisle_id'],data_tr['user_id'],data_tr['product_id']
         data_tr = np.array(data_tr).astype(np.float32)
         
         user_prod_pred = pd.DataFrame(user_prod_pred,columns=['user_id','product_id']+prod_feat_name)
         user_prod_pred['aisle_id'] = user_prod_pred['product_id'].map(self.prod_aisle_dict)
-        user_prod_pred['department_id'] = user_prod_pred['product_id'].map(self.prod_dept_dict)
         user_aisle_pred = pd.DataFrame(user_aisle_pred,columns=['user_id','aisle_id']+aisle_feat_name)
-        user_dept_pred = pd.DataFrame(user_dept_pred,columns=['user_id','department_id']+dept_feat_name)
-        data_eval = user_prod_pred.merge(user_aisle_pred,how='left',on=['user_id','aisle_id']).merge(user_dept_pred,
-                                                                                                     how='left',on=['user_id','department_id'])
-        del data_eval['aisle_id'],data_eval['department_id']
+        data_eval = user_prod_pred.merge(user_aisle_pred,how='left',on=['user_id','aisle_id'])
+        del data_eval['aisle_id']
 
         user_prod_preds = np.array(data_eval[['user_id','product_id']]).astype(np.int32)
         data_eval = np.array(data_eval.iloc[:,2:])
