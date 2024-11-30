@@ -251,7 +251,7 @@ class ProductTrainer(Trainer):
         self.agg_data = agg_data
         return [user_prod,data_dict,temp_dict]
     
-    def evaluate_or_submit(self,mode='evaluate'):
+    def evaluate_or_submit(self,mode='evaluate',agg_data=None):
         params = {
             'task': 'train',
             'boosting_type': 'gbdt',
@@ -269,15 +269,14 @@ class ProductTrainer(Trainer):
         else:
             addr = ''
         suffix = [s+'.npy' for s in ['eval','pred']]
-        prefix = ['user_product','user_aisle']
+        prefix = ['user_product','user_aisle','user_reorder']
         files = ['_'.join(comb) for comb in product(prefix,suffix)]
         checks = [os.path.exists(os.path.join(f'metadata/{addr}',file)) for file in files]
         assert np.all(checks),'all the eval and pred file of both user_product and user_aisle must be saved'
         
         data = [np.load(os.path.join(f'metadata/{addr}',file)) for file in files]
-        user_prod_eval,user_prod_pred,user_aisle_eval,user_aisle_pred,user_dept_eval,user_dept_pred = data
-        #user_aisle_eval = user_aisle_eval[:,:-1]
-        user_dept_eval = user_dept_eval[:,:-1]
+        user_prod_eval,user_prod_pred,user_aisle_eval,user_aisle_pred,user_reorder_eval,user_reorder_pred = data
+        user_reorder_eval = user_reorder_eval[:,:-1]
         user_prod_eval[:,1] -= 1;user_prod_pred[:,1] -= 1
         label = user_prod_eval[:,-1]
         user_prod_eval = np.delete(user_prod_eval,-1,axis=1)
@@ -286,14 +285,19 @@ class ProductTrainer(Trainer):
         user_prod_eval['aisle_id'] = user_prod_eval['product_id'].map(self.prod_aisle_dict)
         aisle_feat_name = [f'aislef_{i}' for i in range(51)]
         user_aisle_eval = pd.DataFrame(user_aisle_eval,columns=['user_id','aisle_id']+aisle_feat_name)
-        data_tr = user_prod_eval.merge(user_aisle_eval,how='left',on=['user_id','aisle_id'])
+        reorder_feat_name = [f'reorderf_{i}' for i in range(51)]
+        user_reorder_eval = pd.DataFrame(user_reorder_eval,columns=['user_id']+reorder_feat_name)
+        data_tr = user_prod_eval.merge(user_aisle_eval,how='left',on=['user_id','aisle_id']).merge(user_reorder_eval,how='left',on=['user_id'])
+        #
         del data_tr['aisle_id'],data_tr['user_id'],data_tr['product_id']
         data_tr = np.array(data_tr).astype(np.float32)
         
         user_prod_pred = pd.DataFrame(user_prod_pred,columns=['user_id','product_id']+prod_feat_name)
         user_prod_pred['aisle_id'] = user_prod_pred['product_id'].map(self.prod_aisle_dict)
         user_aisle_pred = pd.DataFrame(user_aisle_pred,columns=['user_id','aisle_id']+aisle_feat_name)
-        data_eval = user_prod_pred.merge(user_aisle_pred,how='left',on=['user_id','aisle_id'])
+        user_reorder_pred = pd.DataFrame(user_reorder_pred,columns=['user_id']+reorder_feat_name)
+        data_eval = user_prod_pred.merge(user_aisle_pred,how='left',on=['user_id','aisle_id']).merge(user_reorder_pred,how='left',on=['user_id'])
+        #
         del data_eval['aisle_id']
 
         user_prod_preds = np.array(data_eval[['user_id','product_id']]).astype(np.int32)
@@ -309,19 +313,16 @@ class ProductTrainer(Trainer):
             return predictions
         
         lagging = self.lagging if np.sign(self.lagging) < 0 else -self.lagging
-        index = lagging - 1
-        try:
-            self.agg_data
-        except AttributeError:
-            self.agg_data = self.build_agg_data('product_id')
-        agg_data_te = self.agg_data[self.agg_data['eval_set']=='test']
+        if agg_data is None:
+            agg_data = pd.read_pickle('data/tmp/user_product_info.csv')
+        agg_data_te = agg_data[agg_data['eval_set']=='test']
         rows = tqdm(agg_data_te.iterrows(),total=agg_data_te.shape[0],desc='collecting label for evaluation')
         user_prods = []
         for _,row in rows:
             user,prod = row['user_id'],row['product_id']
             reorder = row['reordered']
-            prod = prod[index]
-            reorder = reorder[index]
+            prod = prod[lagging]
+            reorder = reorder[lagging]
             reorder = list(map(int,reorder.split('_')))
             products = np.array(list(map(int,prod.split('_'))))
             users = np.array([user] * len(products))
@@ -354,14 +355,15 @@ if __name__ == '__main__':
                                     eval_epoch=1,
                                     epochs=10,
                                     learning_rate=0.002,
-                                    lagging=1,
+                                    lagging=2,
                                     batch_size=512,
                                     early_stopping=2,
                                     warm_start=False,
                                     optim_option='adam')
     # product_trainer.train(use_amp=False,ev='evaluation/')
     # product_trainer.predict(save_name='user_product_pred',ev='evaluation/')
-    product_trainer.evaluate_or_submit(mode='submit')
+    agg_data = pd.read_pickle('data/tmp/user_product_info.csv')
+    product_trainer.evaluate_or_submit(mode='evaluate',agg_data=agg_data)
 
 
 
@@ -395,5 +397,6 @@ if __name__ == '__main__':
 # suffix = [s+'.npy' for s in ['eval','pred']]
 # prefix = ['user_product','user_aisle','user_dept']
 # files = ['_'.join(comb) for comb in product(prefix,suffix)]
-# p = np.load('metadata/user_dept_pred.npy')
+# p = np.load('metadata/evaluation/user_aisle_eval.npy')
+# z = p[:1000]
 # os.path.exists(os.path.join('metadata/','user_aisle_eval.npy'))

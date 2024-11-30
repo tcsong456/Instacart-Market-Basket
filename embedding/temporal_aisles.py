@@ -15,7 +15,6 @@ import pandas as pd
 from tqdm import tqdm
 from itertools import chain
 from utils.utils import pad,logger,TMP_PATH,pickle_save_load,optimize_dtypes
-from torch.cuda.amp import autocast,GradScaler
 from nn_model.aisle_lstm import AisleLSTM
 from embedding.trainer import Trainer
 from more_itertools import unique_everseen

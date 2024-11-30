@@ -15,7 +15,7 @@ from torch import optim
 from utils.utils import logger
 from torch.cuda.amp import autocast,GradScaler
 from create_merged_data import data_processing
-from utils.loss import NextBasketLoss,SeqLogLoss
+from utils.loss import NextBasketLogLoss,SeqLogLoss
 
 convert_index_cuda = lambda x:torch.from_numpy(x).long().cuda()
 get_checkpoint_path = lambda model_name:f'{model_name}_best_checkpoint.pth'
@@ -59,7 +59,7 @@ class Trainer:
         self.max_len = data['order_number'].max()
         
         self.loss_fn_tr = SeqLogLoss(lagging=lagging,eps=1e-7)
-        self.loss_fn_te = NextBasketLoss(lagging=lagging,eps=1e-7)
+        self.loss_fn_te = NextBasketLogLoss(lagging=lagging,eps=1e-7)
     
     def build_agg_data(self,attr_col):
         agg_data = data_processing(self.data,save=True)
@@ -73,29 +73,7 @@ class Trainer:
     
     def build_data_dl(self,mode):
         raise NotImplementedError('subclass must implement this method')
-    
-    # def train(self,use_amp=False):
-    #     model = self.model(self.input_dim,self.output_dim,*self.max_index_info).to('cuda')
-    #     model_name = model.__class__.__name__
-    #     optimizer = self.optimizer(model.parameters(),lr=self.learning_rate)
-    #     lr_scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer,mode='min',patience=0,factor=0.2,verbose=True)
-        
-    #     checkpoint_path = get_checkpoint_path(model_name)
-    #     checkpoint_path = f'checkpoint/{checkpoint_path}'
-    #     if self.warm_start:
-    #         checkpoint = torch.load(checkpoint_path)
-    #         model.load_state_dict(checkpoint['model_state_dict'])
-    #         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-    #         start_epoch = checkpoint['best_epoch']
-    #         start_epoch += 1
-    #         best_loss = checkpoint['best_loss']
-    #         logger.info(f'warm starting training from best epoch:{start_epoch} and best loss:{best_loss:.5f}')
-    #     else:
-    #         start_epoch = 0
-    #         best_loss = np.inf
-        
-    #     return model,optimizer,lr_scheduler,start_epoch,best_loss,checkpoint_path
-    
+
     def _collect_final_time_step(self,lengths,aux_info,time_steps,label=None):
         batch_lengths = torch.Tensor(lengths).reshape(-1,1).unsqueeze(-1).expand(-1,1,time_steps.shape[-1]).long().cuda() - self.lagging
         pred_emb = torch.gather(time_steps,index=batch_lengths,dim=1).squeeze()
@@ -159,6 +137,7 @@ class Trainer:
                     h,preds = model(batch,*aux_info,*temps)
                     loss = self.loss_fn_tr(preds,label,batch_lengths)
                     loss.backward()
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10.0)
                     optimizer.step()
 
                 cur_loss = loss.item()
