@@ -368,35 +368,4 @@ if __name__ == '__main__':
 
 
 #%%
-# import pandas as  pd
-# from tqdm import tqdm
-# from itertools import product
-# import lightgbm as lgb
-# import numpy as np
-# import torch
-# import pickle
-# data = pd.read_csv('data/orders_info.csv')
-# z = data.iloc[:100000]
-# gb = z.groupby('order_id')
-# dfs, order_ids = zip(*[(df, key) for key, df in gb])
-# p = np.load('metadata/user_product_eval.npy')
-# checkpoint = torch.load('checkpoint/ProdLSTM_best_checkpoint.pth')
-# with open('data/tmp/user_prod_train.pkl','rb') as f:
-#     user_prod = pickle.load(f)
-# from itertools import product
-# import os
-# os.path.exists('metadata/user_aisle_eval.npy')
-# agg_data = pd.read_pickle('data/tmp/user_product_info.csv')
-# user_aisle_pred = np.load('metadata/user_aisle_pred.npy')
-# x = np.random.rand(32,10)
-# np.array(pd.DataFrame(x))
-# k[['label','prediction']] = k[['label','prediction']].fillna(0)
 
-# checkpoint = torch.load('checkpoint/AisleLSTM_best_checkpoint.pth')
-# sub = pd.read_csv('data/sample_submission.csv')
-# suffix = [s+'.npy' for s in ['eval','pred']]
-# prefix = ['user_product','user_aisle','user_dept']
-# files = ['_'.join(comb) for comb in product(prefix,suffix)]
-# p = np.load('metadata/evaluation/user_aisle_eval.npy')
-# z = p[:1000]
-# os.path.exists(os.path.join('metadata/','user_aisle_eval.npy'))
