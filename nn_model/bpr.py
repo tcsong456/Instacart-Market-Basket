@@ -7,7 +7,7 @@ Created on Mon Dec  2 17:34:02 2024
 import torch
 from torch import nn
 
-class BPR(nn.Module):
+class BPREmbeddingModel(nn.Module):
     def __init__(self,
                  num_items,
                  emb_dim):

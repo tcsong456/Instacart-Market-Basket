@@ -5,11 +5,17 @@ Created on Sat Nov 30 20:39:09 2024
 @author: congx
 """
 import gc
+import os
 import torch
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
+from torch import optim
 from collections import defaultdict
+from nn_model.bpr import BPREmbeddingModel
+from utils.loss import BPRLoss
+from utils.utils import logger
+from sklearn.model_selection import train_test_split
 
 def pos_pair_cnt(data):
     data = data[data['eval_set']!='test']
@@ -101,15 +107,112 @@ def emb_dataloader(prod_samples,
                 yield batch
     
     for batch in batch_gen():
+        batch -= 1
         batch = torch.from_numpy(batch).long().cuda()
         yield batch
-    
+
+get_checkpoint_path = lambda model_name:f'{model_name}_best_checkpoint.pth'
 class EmbeddingTrainer:
     def __init__(self,
                  data,
-                 batch_size):
+                 items,
+                 emb_dim,
+                 epochs=10,
+                 eval_epoch=1,
+                 reg_lambda=0.1,
+                 learning_rate=0.01,
+                 batch_size=32,
+                 train_size=0.8,
+                 seed=97734,
+                 warm_start=False,
+                 early_stopping=2):
         self.data = data
+        self.epochs = epochs
+        self.items = items
+        self.emb_dim = emb_dim
+        self.train_size = train_size
+        self.seed = seed
+        self.eval_epoch = eval_epoch
         self.batch_size = batch_size
+        self.warm_start = warm_start
+        self.learning_rate = learning_rate
+        self.early_stopping = early_stopping
+        self.loss_func = BPRLoss(reg_lambda)
+    
+    def train(self):
+        num_items = self.data['product_id'].max()
+        model = BPREmbeddingModel(num_items,self.emb_dim).cuda()
+        optimizer = optim.Adam(model.parameters(),lr=self.learning_rate)
+        lr_scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer,mode='min',patience=0,factor=0.2,verbose=True)
+        data_tr,data_val  = train_test_split(self.items,train_size=self.train_size,random_state=self.seed)
+        
+        model_name = model.__class__.__name__
+        checkpoint_path = get_checkpoint_path(model_name)
+        checkpoint_path = f'checkpoint/{checkpoint_path}'
+        if self.warm_start:
+            checkpoint = torch.load(checkpoint_path)
+            model.load_state_dict(checkpoint['model_state_dict'])
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            start_epoch = checkpoint['best_epoch']
+            start_epoch += 1
+            best_loss = checkpoint['best_loss']
+            logger.info(f'warm starting training from best epoch:{start_epoch} and best loss:{best_loss:.5f}')
+        else:
+            start_epoch = 0
+            best_loss = np.inf
+        self.checkpoint_path = checkpoint_path
+        
+        no_improvement = 0
+        for epoch in range(start_epoch,self.epochs):
+            total_loss,cur_iter = 0,1
+            model.train()
+            train_dl = emb_dataloader(data_tr,batch_size=self.batch_size,shuffle=True,drop_last=True)
+            train_batch_loader = tqdm(train_dl,total=data_tr.shape[0]//self.batch_size,desc='training brp embedding')
+            for batch in train_batch_loader:
+                optimizer.zero_grad()
+                v_i,v_k,v_j = model(batch)
+                loss = self.loss_func(v_i,v_k,v_j)
+                loss.backward()
+                # torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10.0)
+                optimizer.step()
+                
+                total_loss += loss.item()
+                avg_loss = total_loss / cur_iter
+                cur_iter += 1
+                train_batch_loader.set_postfix(train_loss=f'{avg_loss:.05f}')
+            
+            if epoch % self.eval_epoch == 0:
+                model.eval()
+                total_loss_val,ite = 0,1
+                eval_dl = emb_dataloader(data_val,batch_size=4096,shuffle=False,drop_last=False)
+                eval_batch_loader = tqdm(eval_dl,total=data_val.shape[0]//4096,desc='evaluating bpr embedding',
+                                          leave=False,dynamic_ncols=True)
+                with torch.no_grad():
+                    for batch in eval_batch_loader:
+                        v_i,v_k,v_j = model(batch)
+                        loss = self.loss_func(v_i,v_k,v_j)
+                        
+                        total_loss_val += loss.item()
+                        avg_loss_val = total_loss_val / ite
+                        ite += 1
+                        eval_batch_loader.set_postfix(eval_loss=f'{avg_loss_val:.05f}')
+                lr_scheduler.step(avg_loss_val)
+                
+                if avg_loss_val < best_loss:
+                    best_loss = avg_loss_val
+                    checkpoint = {'best_epoch':epoch,
+                                  'best_loss':best_loss,
+                                  'model_state_dict':model.state_dict(),
+                                  'optimizer_state_dict':optimizer.state_dict()}
+                    os.makedirs('checkpoint',exist_ok=True)
+                    torch.save(checkpoint,checkpoint_path)
+                    no_improvement = 0
+                else:
+                    no_improvement += 1
+                    
+                if no_improvement == self.early_stopping:
+                    logger.info('early stopping is trggered,the model has stopped improving')
+                    return
 
 if __name__ == '__main__':
     # agg_data = pd.read_pickle('data/tmp/user_product_info.csv')
@@ -118,8 +221,19 @@ if __name__ == '__main__':
     # pos_pair = pos_pair_stats(order_products,stats_cnt,top=3)
     # neg_pair,neg_pair_probs = neg_pair_stats(data,pos_pair)
     # prods = emb_data_maker(pos_pair,neg_pair,neg_pair_probs,num_neg=5)
-    # dl = emb_dataloader(prods,batch_size=256)
-    
+    trainer =  EmbeddingTrainer(
+                                 data,
+                                 prods,
+                                 emb_dim=50,
+                                 epochs=10,
+                                 eval_epoch=1,
+                                 reg_lambda=0.01,
+                                 learning_rate=0.01,
+                                 batch_size=2048,
+                                 train_size=0.8,
+                                 seed=97734,
+                                 early_stopping=2)
+    trainer.train()
 
 
 #%%
@@ -140,7 +254,10 @@ with Timer(5):
     for batch in dl:
         break
 #%%
-x = np.random.choice(neg_pair[196],p=neg_pair_probs[196],replace=True,size=100000*5).reshape(-1,5)
+model = BPREmbeddingModel(50000,50).cuda()
+
+
+
 
 #%%
-batch.shape
+data['product_id'].max()

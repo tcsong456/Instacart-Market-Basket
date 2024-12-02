@@ -7,6 +7,20 @@ Created on Tue Nov 12 20:46:42 2024
 import torch
 from torch import nn
 
+class BPRLoss(nn.Module):
+    def __init__(self,
+                 lambda_reg):
+        super().__init__()
+        self.lambda_reg = lambda_reg
+    
+    def forward(self,v_i,v_k,v_j):
+        positive_score = (v_i * v_k).sum(dim=1).reshape(-1,1)
+        negative_score = (v_k.unsqueeze(1) * v_j).sum(dim=-1)
+        loss = -torch.log(torch.sigmoid(positive_score - negative_score)).mean()
+        reg_loss = self.lambda_reg * (v_i.norm(2) + v_k.norm(2) + v_j.norm(2))
+        loss += reg_loss
+        return loss
+
 class SeqLogLoss(nn.Module):
     def __init__(self,
                  lagging,
@@ -49,8 +63,6 @@ class SeqMSELoss(nn.Module):
         self.lagging = lagging
     
     def forward(self,y_pred,y_true,lengths):
-        # y_true = torch.log1p(y_true)
-        # y_pred = torch.log1p(y_pred)
         mask = torch.zeros(y_true.shape).cuda()
         for idx,length in enumerate(lengths):
             mask[idx,:length-self.lagging] = 1
@@ -67,8 +79,6 @@ class NextBasketMSELoss(nn.Module):
         self.lagging = lagging
     
     def forward(self,y_pred,y_true,lengths):
-        # y_true = torch.log1p(y_true)
-        # y_pred = torch.log1p(y_pred)
         index = torch.Tensor(lengths).long().reshape(-1,1).to('cuda') - self.lagging
         yp = torch.gather(y_pred,dim=1,index=index).squeeze()
         yt = torch.gather(y_true,dim=1,index=index).squeeze()
