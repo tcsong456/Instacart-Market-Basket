@@ -6,6 +6,8 @@ Created on Sat Nov 30 20:39:09 2024
 """
 import gc
 import os
+import sys
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 import torch
 import numpy as np
 import pandas as pd
@@ -111,7 +113,7 @@ def emb_dataloader(prod_samples,
         batch = torch.from_numpy(batch).long().cuda()
         yield batch
 
-get_checkpoint_path = lambda model_name:f'{model_name}_best_checkpoint.pth'
+get_checkpoint_path = lambda model_name,seed:f'{model_name}_best_checkpoint_{seed}.pth'
 class EmbeddingTrainer:
     def __init__(self,
                  data,
@@ -147,7 +149,7 @@ class EmbeddingTrainer:
         data_tr,data_val  = train_test_split(self.items,train_size=self.train_size,random_state=self.seed)
         
         model_name = model.__class__.__name__
-        checkpoint_path = get_checkpoint_path(model_name)
+        checkpoint_path = get_checkpoint_path(model_name,self.seed)
         checkpoint_path = f'checkpoint/{checkpoint_path}'
         if self.warm_start:
             checkpoint = torch.load(checkpoint_path)
@@ -167,13 +169,12 @@ class EmbeddingTrainer:
             total_loss,cur_iter = 0,1
             model.train()
             train_dl = emb_dataloader(data_tr,batch_size=self.batch_size,shuffle=True,drop_last=True)
-            train_batch_loader = tqdm(train_dl,total=data_tr.shape[0]//self.batch_size,desc='training brp embedding')
+            train_batch_loader = tqdm(train_dl,total=data_tr.shape[0]//self.batch_size,desc=f'training bpr embedding at epoch:{epoch}')
             for batch in train_batch_loader:
                 optimizer.zero_grad()
                 v_i,v_k,v_j = model(batch)
                 loss = self.loss_func(v_i,v_k,v_j)
                 loss.backward()
-                # torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10.0)
                 optimizer.step()
                 
                 total_loss += loss.item()
@@ -215,49 +216,37 @@ class EmbeddingTrainer:
                     return
 
 if __name__ == '__main__':
-    # agg_data = pd.read_pickle('data/tmp/user_product_info.csv')
-    # data = pd.read_csv('data/orders_info.csv')
-    # order_products,stats_cnt = pos_pair_cnt(data)
-    # pos_pair = pos_pair_stats(order_products,stats_cnt,top=3)
-    # neg_pair,neg_pair_probs = neg_pair_stats(data,pos_pair)
-    # prods = emb_data_maker(pos_pair,neg_pair,neg_pair_probs,num_neg=5)
-    trainer =  EmbeddingTrainer(
-                                 data,
-                                 prods,
-                                 emb_dim=50,
-                                 epochs=10,
-                                 eval_epoch=1,
-                                 reg_lambda=0.01,
-                                 learning_rate=0.01,
-                                 batch_size=2048,
-                                 train_size=0.8,
-                                 seed=97734,
-                                 early_stopping=2)
-    trainer.train()
+    path = 'data/tmp/emb_items.npy'
+    data = pd.read_csv('data/orders_info.csv')
+    order_products,stats_cnt = pos_pair_cnt(data)
+    if os.path.exists(path):
+        prods = np.load(path)
+    else:
+        order_products,stats_cnt = pos_pair_cnt(data)
+        pos_pair = pos_pair_stats(order_products,stats_cnt,top=3)
+        neg_pair,neg_pair_probs = neg_pair_stats(data,pos_pair)
+        prods = emb_data_maker(pos_pair,neg_pair,neg_pair_probs,num_neg=5)
+        np.save(path,prods)
+
+    for seed in [97734,876301,3985]:
+        trainer =  EmbeddingTrainer(data,
+                                    prods,
+                                    emb_dim=24,
+                                    epochs=10,
+                                    eval_epoch=1,
+                                    reg_lambda=0.00001,
+                                    learning_rate=0.005,
+                                    batch_size=4096,
+                                    train_size=0.9,
+                                    seed=seed,
+                                    early_stopping=2)
+        trainer.train()
 
 
 #%%
-from itertools import product
-from functools import partial
-from utils.utils import Timer
-import torch
-# data = data[data['eval_set']!='test']
-# z = data.iloc[:1000000]
-# x = z.groupby(['user_id','order_id','order_number'])['product_id'].apply(list).reset_index()
-# x = x.sort_values(['user_id','order_number'])
-# c = x.groupby('user_id')['product_id'].shift(-1)
-# c.name = 'shift_products'
-# products = pd.read_csv('data/products.csv')
-
-# d = defaultdict(list)
-with Timer(5):
-    for batch in dl:
-        break
-#%%
-model = BPREmbeddingModel(50000,50).cuda()
 
 
 
 
-#%%
-data['product_id'].max()
+
+
