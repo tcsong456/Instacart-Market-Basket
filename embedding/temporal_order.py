@@ -53,7 +53,7 @@ def reorder_data_maker(data,max_len,mode='train'):
             days_interval = np.roll(days_interval,-1)[:-1]
             reorders,next_reorders = reorders[:-1],reorders[-1]
             next_reorders = convert_str_int(next_reorders.split('_'))
-            label = sum(next_reorders) if mode!='test' else -1 
+            label = sum(next_reorders) if mode!='test' else 0
             reorders = [convert_str_int(reorder.split('_')) for reorder in reorders]
             
             seen_aisles = set()
@@ -78,10 +78,9 @@ def reorder_data_maker(data,max_len,mode='train'):
                 reorder_ratio = reorders / order_size
                 total_reorders += reorders
                 reorder_size_ratio = total_reorders / total_size
-                reorder_trend_ratio = total_reorders / (idx + 1)
+                reorder_trend_ratio = np.log1p(total_reorders / (idx + 1))
                 new_seen = len(set(aisle) - seen_aisles)
                 seen_aisles |= set(aisle)
-                # aisle_var = len(seen_aisles) / (idx + 1)
                 
                 in_reorder_ord.append(in_reorder)
                 in_reorder_trend_ord.append(in_reorder_trend)
@@ -89,7 +88,6 @@ def reorder_data_maker(data,max_len,mode='train'):
                 order_size_ord.append(np.log1p(order_size))
                 reorder_trend_ratio_ord.append(reorder_trend_ratio)
                 new_seen_ord.append(np.log1p(new_seen))
-                # aisle_var_ord.append(aisle_var)
                 reorder_ratio_ord.append(reorder_ratio)
                 reorder_size_ratio_ord.append(reorder_size_ratio)
             

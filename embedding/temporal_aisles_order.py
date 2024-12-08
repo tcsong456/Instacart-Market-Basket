@@ -1,149 +1,35 @@
 # -*- coding: utf-8 -*-
 """
-Created on Sat Nov 16 11:50:57 2024
+Created on Sun Dec  8 15:54:34 2024
 
 @author: congx
 """
-import gc
 import os
 import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 import torch
-import operator
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
 from itertools import chain
+from utils.loss import NextBasketMSELoss,SeqMSELoss
 from utils.utils import pad,logger,TMP_PATH,pickle_save_load,optimize_dtypes
-from nn_model.aisle_lstm import AisleLSTM
+from nn_model.aisle_order_lstm import AisleOrderLSTM
 from embedding.trainer import Trainer
 from more_itertools import unique_everseen
-from embedding.base_stats_collector import BaseStatsCollector
-from collections import defaultdict
-
-class AisleStatsCollector(BaseStatsCollector):
-    def __init__(self,
-                 data):
-        super().__init__(data=data)
-        user_unique_aisles = data[data['eval_set']!='test'].groupby('user_id')['aisle_id'].apply(set).apply(list)
-        self.unique_dict = user_unique_aisles.to_dict()
-        self.stats = self.build_data()
-    
-    def build_data(self):
-        path = os.path.join(TMP_PATH,'aisle_stats_data.pkl')
-        try:
-            stats = pd.read_pickle(path)
-        except FileNotFoundError:
-            stats = []
-            order_aisle = self.data.groupby(['user_id','order_id','order_number','aisle_id'])['counter'].sum().reset_index()
-            order_aisle = order_aisle.sort_values(['user_id','order_number'])
-            order_aisle_ls = order_aisle.groupby(['user_id','order_id','order_number'])['aisle_id'].apply(list).reset_index()
-            order_aisle_ls = order_aisle_ls.sort_values(['user_id','order_number'])
-            del order_aisle_ls['order_number']
-            stats.append(order_aisle_ls)
-            
-            order_aisle_shift = order_aisle_ls.groupby('user_id')['aisle_id'].shift(-1)
-            order_aisle_shift.name = 'aisle_next'
-            stats.append(order_aisle_shift)
-            
-            order_aisle_cnt = order_aisle.groupby(['user_id','order_id','order_number'])['counter'].apply(list).reset_index()
-            order_aisle_cnt = order_aisle_cnt.sort_values(['user_id','order_number'])
-            del order_aisle_cnt['order_number']
-            stats.append(order_aisle_cnt[['counter']])
-            
-            for col in ['order_dow','days_since_prior_order']:
-                s = self._shift_stats(col)
-                stats.append(s)
-            stats = pd.concat(stats,axis=1)
-            stats = optimize_dtypes(stats)
-            stats.to_pickle(path)
-        return stats
-    
-    def _shift_stats(self,col):
-        stat = self.data.groupby(['user_id','order_id','order_number'])[col].apply(lambda x:x.iloc[-1]).reset_index()
-        stat = stat.sort_values(['user_id','order_number'])
-        del stat['order_number']
-        stat = stat.groupby(['user_id'])[col].shift(-1)
-        stat.name = col
-        return stat
-    
-    def true_adjacent_stat(self,valid_cnt=1,min_interval=0,max_interval=31,comparator='equal'):
-        operators = {'equal':operator.eq,
-                     'greater_equal':operator.ge}
-        op = operators[comparator]
-        true_stats = defaultdict(lambda:defaultdict(int))
-        true_interval_stats = defaultdict(list)
-        rows = tqdm(self.stats.iterrows(),total=self.stats.shape[0],desc='building true adjacent row stat')
-        for _,row in rows:
-            user,cur_aisles,next_aisles,cnts = row['user_id'],row['aisle_id'],row['aisle_next'],row['counter']
-            if np.isnan(next_aisles).any() or next_aisles == [-1]:
-                continue
-            order_interval = row['days_since_prior_order']
-            unique_aisles = self.unique_dict[user]
-            for aisle in unique_aisles:
-                if aisle in cur_aisles :
-                    index = cur_aisles.index(aisle)
-                    cnt = cnts[index]
-                    if op(cnt,valid_cnt) and order_interval >= min_interval and order_interval < max_interval:
-                        key = f'{str(valid_cnt)}_{str(min_interval)}_{str(max_interval)}'
-                        true_stats[aisle][f'total_{key}'] += 1
-                        if aisle in next_aisles:
-                            true_stats[aisle][f'in_{key}'] += 1
-                            true_interval_stats[aisle].append(order_interval)
-                            
-        true_stats = self._convert_to_prob_dict(true_stats)
-        for key,value in true_interval_stats.items():
-            value = self._convert_list_to_dist(value)
-            true_interval_stats[key] = value
-        
-        true_stats = self._replace_nan(true_stats)
-        return true_stats,true_interval_stats
-    
-    def save(self):
-        stats = {str(k):{} for k in [1,2,3,4]}
-        intervals = [(0,31),(0,8),(8,23),(23,31)]
-        for interval in intervals:
-            min_interval,max_interval = interval
-            for cnt in [1,2,3,4]:
-                params = {'valid_cnt':cnt,'min_interval':min_interval,'max_interval':max_interval}
-                if cnt <= 3:
-                    params.update({'comparator':'equal'}) 
-                else:
-                    params.update({'comparator':'greater_equal'})
-                true_stats,_ = self.true_adjacent_stat(**params)
-                key = f'cnt_{str(cnt)}_{str(min_interval)}_{str(max_interval)}'
-                stats[str(cnt)][key] = true_stats
-        path = os.path.join(TMP_PATH,'true_stats.pkl')
-        pickle_save_load(path,stats,mode='save')
-        
-        fake_stats,fake_stats_interval = self.fake_adjacent_stat()
-        for stat,stat_path in zip([fake_stats,fake_stats_interval],['fake_stats','fake_stats_interval']):
-            path = os.path.join(TMP_PATH,f'{stat_path}.pkl')
-            pickle_save_load(path,stat,mode='save')
-    
-    def load(self,path=None):
-        if path is None:
-            load_data = []
-            for p in ['true_stats','fake_stats','fake_stats_interval']:
-                path = os.path.join(TMP_PATH,f'{p}.pkl')
-                load_data.append(pickle_save_load(path,mode='load'))
-            return load_data
-
-        load_data = pickle_save_load(path,mode='load')
-        return load_data
 
 def aisle_data_maker(agg_data,max_len,aisle_dept_dict,mode='train'):
     suffix = mode + '.pkl'
-    save_path = [path+'_'+suffix for path in ['user_aisle','aisle_data_dict','temporal_dict']]
+    save_path = [path+'_'+suffix for path in ['user_aisle_order','aisle_data_order_dict','temporal_dict']]
     check_files = np.all([os.path.exists(os.path.join(TMP_PATH,file)) for file in save_path])
     if check_files:
         logger.info('loading temporary data')
-        data_dict = pickle_save_load(os.path.join(TMP_PATH,f'aisle_data_dict_{suffix}'),mode='load')
+        data_dict = pickle_save_load(os.path.join(TMP_PATH,f'aisle_data_order_dict_{suffix}'),mode='load')
         keys = list(data_dict.keys())
         rand_index = np.random.randint(0,len(keys),1)[0]
         rand_key = keys[rand_index]
         aisle_info_dim = data_dict[rand_key][0].shape[-1] - 1
-        user_aisle = pickle_save_load(os.path.join(TMP_PATH,f'user_aisle_{suffix}'),mode='load')
+        user_aisle = pickle_save_load(os.path.join(TMP_PATH,f'user_aisle_order_{suffix}'),mode='load')
         temp_dict = pickle_save_load(os.path.join(TMP_PATH,f'temporal_dict_{suffix}'),mode='load')
         return user_aisle,data_dict,temp_dict,aisle_info_dim
     
@@ -175,7 +61,8 @@ def aisle_data_maker(agg_data,max_len,aisle_dept_dict,mode='train'):
         reorders = [list(map(int,reorder.split('_'))) for reorder in reorders]
         
         for aisle in all_aisles:
-            label = -1 if mode == 'test' else aisle in next_aisles 
+            label = sum([1 if a==aisle else 0 for a in next_aisles])
+            label = 0 if mode == 'test' else label
             dept = aisle_dept_dict[int(aisle)]
             user_aisle.append([user_id,int(aisle),dept])
             
@@ -187,11 +74,11 @@ def aisle_data_maker(agg_data,max_len,aisle_dept_dict,mode='train'):
             cumsum_inorder_ord = []
             cnt_ord = []
             cumsum_cnt_ratio_ord = []
-            # aisle_var_ord = []
-            aisle_var_ratio_ord = []
+            aisle_var_ord = []
             reorder_ratio_ord = []
             reorder_basket_ratio_ord = []
             reorder_total_ratio_ord = []
+            reorder_ord = []
             cumsum_inorder,total_cnts,total_sizes,total_reorder_sums = 0,0,0,0
             seen_aisles = set()
             for idx,(order_aisle,reorder_aisle) in enumerate(zip(orders,reorders)):
@@ -205,12 +92,12 @@ def aisle_data_maker(agg_data,max_len,aisle_dept_dict,mode='train'):
                 cumsum_inorder_ratio = cumsum_inorder / (idx + 1)
                 cur_cnt = sum(total_orders)
                 total_cnts += cur_cnt
-                cumsum_cnt_ratio = total_cnts / (idx + 1)
+                cumsum_cnt_ratio = np.log1p(total_cnts / (idx + 1))
                 reorder_total = sum(reorder_aisle)
                 total_reorder_sums += reorder_total
-                reorder_ratio = total_reorder_sums / (idx + 1)
+                reorder_ratio = np.log1p(total_reorder_sums / (idx + 1))
                 reorder_basket_ratio = reorder_total / order_size
-                aisle_var_ratio_ord.append(len(seen_aisles)/(idx+1))
+                aisle_var_ord.append(np.log1p(len(seen_aisles)/(idx+1)))
                 seen_aisles |= set(order_aisle)
                 total_sizes += order_size
                 reorder_total_ratio = total_reorder_sums / total_sizes
@@ -221,17 +108,18 @@ def aisle_data_maker(agg_data,max_len,aisle_dept_dict,mode='train'):
                 cumsum_inorder_ord.append(cumsum_inorder)
                 cumsum_inorder_ratio_ord.append(cumsum_inorder_ratio)
                 order_sizes_ord.append(order_size)
-                cnt_ord.append(cur_cnt)
+                cnt_ord.append(np.log1p(cur_cnt))
                 cumsum_cnt_ratio_ord.append(cumsum_cnt_ratio)
                 reorder_ratio_ord.append(reorder_ratio)
                 reorder_basket_ratio_ord.append(reorder_basket_ratio)
                 reorder_total_ratio_ord.append(reorder_total_ratio)
+                reorder_ord.append(np.log1p(reorder_total))
             
-            next_in_order = np.roll(in_order_ord,-1)
-            next_in_order[-1] = label
+            next_in_order = np.roll(cnt_ord,-1)
+            next_in_order[-1] = np.log1p(label)
             
-            aisle_info = np.stack([in_order_ord,np.array(index_order_ord)/145,index_order_ratio_ord,aisle_var_ratio_ord,
-                                   reorder_ratio_ord,cumsum_inorder_ratio_ord,order_days/30,cumsum_cnt_ratio_ord,
+            aisle_info = np.stack([in_order_ord,np.array(index_order_ord)/145,index_order_ratio_ord,aisle_var_ord,reorder_ratio_ord,
+                                   cumsum_inorder_ratio_ord,order_days/30,cumsum_cnt_ratio_ord,reorder_ord,
                                    reorder_basket_ratio_ord,np.array(order_sizes_ord)/145,cnt_ord,reorder_total_ratio_ord,
                                    next_in_order],axis=1).astype(np.float16)
             aisle_info_dim = aisle_info.shape[1] - 1
@@ -310,13 +198,15 @@ class AisleTrainer(Trainer):
                          eval_epoch=eval_epoch)
         self.dataloader = aisle_dataloader
         self.data_maker = aisle_data_maker
-        self.model = AisleLSTM
-        self.attr = 'aisle'
+        self.model = AisleOrderLSTM
+        self.attr = 'aisle_order'
         
         self.emb_list = ['user_id','aisle_id','department_id']
         self.max_index_info = [data[col].max() for col in self.emb_list] + [self.max_len]
         aisle_dept_dict = self.prod_data.set_index('aisle_id')['department_id'].to_dict()
         self.data_maker_dicts = [aisle_dept_dict]
+        self.loss_fn_tr = SeqMSELoss(lagging=lagging)
+        self.loss_fn_te = NextBasketMSELoss(lagging=lagging)
     
     def build_data_dl(self,mode):
         agg_data = self.build_agg_data('aisle_id')
@@ -346,6 +236,4 @@ if __name__ == '__main__':
                             epochs=10,
                             eval_epoch=1)
     trainer.train(use_amp=False,ev='')
-    trainer.predict(save_name='user_aisle_pred',ev='')
-
-#%%
+    trainer.predict(save_name='user_aisle_order_pred',ev='')
