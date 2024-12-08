@@ -117,6 +117,3 @@ class Timer:
         print(f'it took {elapsed:.{self.precision}f} seconds to complete')
 
 #%%
-s = 'abcdesf'
-ind = s.find('.')
-s[:-1]

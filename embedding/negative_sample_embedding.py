@@ -16,7 +16,7 @@ from torch import optim
 from collections import defaultdict
 from nn_model.bpr import BPREmbeddingModel
 from utils.loss import BPRLoss
-from utils.utils import logger
+from utils.utils import logger,pickle_save_load
 from sklearn.model_selection import train_test_split
 
 def pos_pair_cnt(data):
@@ -39,7 +39,7 @@ def pos_pair_cnt(data):
         for next_prod in next_products:
             for prod in products:
                 stats_cnt[(next_prod,prod)] += 1
-        
+    pickle_save_load('data/temp/product_stats_cnt.pkl',mode='save')
     return order_products,stats_cnt
 
 def pos_pair_stats(data,pos_cnt_dict,top=3):
@@ -54,9 +54,7 @@ def pos_pair_stats(data,pos_cnt_dict,top=3):
             cnts = list(map(lambda k:pos_cnt_dict.get(k,0),keys))
             sort_index = np.argsort(cnts)[::-1]
             top_index = sort_index[:top] if len(cnts) > top else sort_index
-            keys = np.array(keys)
-            pos_pairs = keys[top_index].tolist()
-            pos_items = list(map(lambda x:x[1],pos_pairs))
+            pos_items = np.array(products)[top_index]
             pos_pair[next_prod] += pos_items
     return pos_pair
 
@@ -218,7 +216,6 @@ class EmbeddingTrainer:
 if __name__ == '__main__':
     path = 'data/tmp/emb_items.npy'
     data = pd.read_csv('data/orders_info.csv')
-    order_products,stats_cnt = pos_pair_cnt(data)
     if os.path.exists(path):
         prods = np.load(path)
     else:

@@ -42,25 +42,26 @@ def product_data_maker(data,max_len,prod_aisle_dict,prod_dept_dict,mode='train')
         
     base_info = []
     data_dict = {}
-    temp_dict = {}
     with tqdm(total=data.shape[0],desc='building product data for dataloader',dynamic_ncols=True,
               leave=False) as pbar:
         for _,row in data.iterrows():
             user,products = row['user_id'],row['product_id']
             reorders = row['reordered']
-            temporal_cols = [row['order_dow'],row['order_hour_of_day'],row['time_zone'],row['days_since_prior_order']]
+            # temporal_cols = [row['order_dow'],row['order_hour_of_day'],row['time_zone'],row['days_since_prior_order']]
+            days_interval = row['days_since_prior_order']
             if row['eval_set'] == 'test' and mode != 'test':
                 products = products[:-1]
                 reorders = reorders[:-1]
-                for idx,col_data in enumerate(temporal_cols):
-                    col_data = col_data[:-1]
-                    temporal_cols[idx] = col_data
-            order_dow,order_hour,order_tz,days_interval = temporal_cols
-            order_dow = pad(np.roll(order_dow,-1)[:-1],max_len)
-            order_hour = pad(np.roll(order_hour,-1)[:-1],max_len)
-            order_tz = pad(np.roll(order_tz,-1)[:-1],max_len)
+                days_interval = days_interval[:-1]
+            #     for idx,col_data in enumerate(temporal_cols):
+            #         col_data = col_data[:-1]
+            #         temporal_cols[idx] = col_data
+            # order_dow,order_hour,order_tz,days_interval = temporal_cols
+            # order_dow = pad(np.roll(order_dow,-1)[:-1],max_len)
+            # order_hour = pad(np.roll(order_hour,-1)[:-1],max_len)
+            # order_tz = pad(np.roll(order_tz,-1)[:-1],max_len)
             days_interval = np.roll(days_interval,-1)[:-1]
-            temp_dict[user] = [order_dow,order_hour,order_tz]
+            # temp_dict[user] = [order_dow,order_hour,order_tz]
             
             products,next_products = products[:-1],products[-1]
             next_products = next_products.split('_')
@@ -68,7 +69,7 @@ def product_data_maker(data,max_len,prod_aisle_dict,prod_dept_dict,mode='train')
             reorders_,next_reorders = reorders[:-1],reorders[-1]
             
             reorders_ = [list(map(int,reorder.split('_'))) for reorder in reorders_]
-            all_products = list(set(chain.from_iterable([product.split('_') for product in products])))
+            all_products = list(set(chain.from_iterable(orders)))
             
             for prod in all_products:
                 label = -1 if mode == 'test' else prod in next_products
@@ -166,7 +167,7 @@ def product_data_maker(data,max_len,prod_aisle_dict,prod_dept_dict,mode='train')
             pbar.update(1)
     user_prod = np.stack(base_info)
     
-    save_data  = [user_prod,data_dict,temp_dict]
+    save_data  = [user_prod,data_dict]
     for path,file in zip(save_path,save_data):
         path = os.path.join(TMP_PATH,path)
         pickle_save_load(path,file,mode='save') 	
@@ -251,7 +252,7 @@ class ProductTrainer(Trainer):
         self.agg_data = agg_data
         return [user_prod,data_dict,temp_dict]
     
-    def evaluate_or_submit(self,mode='evaluate',agg_data=None):
+    def evaluate_or_submit(self,mode='evaluate'):
         params = {
             'task': 'train',
             'boosting_type': 'gbdt',
@@ -276,7 +277,13 @@ class ProductTrainer(Trainer):
         
         data = [np.load(os.path.join(f'metadata/{addr}',file)) for file in files]
         user_prod_eval,user_prod_pred,user_aisle_eval,user_aisle_pred,user_reorder_eval,user_reorder_pred = data
+        # nmf_user_emb,nmf_item_emb = np.load('metadata/nmf_user_emb.npy'),np.load('metadata/nmf_item_emb.npy')
+        # nmf_user_feat = [f'user{i} 'for i in range(30)]
+        # nmf_item_feat = [f'item{i}' for i in range(30)]
+        # user_emb = pd.DataFrame(nmf_user_emb,columns=['user_id']+nmf_user_feat)
+        # item_emb = pd.DataFrame(nmf_item_emb,columns=['product_id']+nmf_item_feat)
         user_reorder_eval = user_reorder_eval[:,:-1]
+        user_aisle_eval = user_aisle_eval[:,:-1]
         user_prod_eval[:,1] -= 1;user_prod_pred[:,1] -= 1
         label = user_prod_eval[:,-1]
         user_prod_eval = np.delete(user_prod_eval,-1,axis=1)
@@ -287,8 +294,9 @@ class ProductTrainer(Trainer):
         user_aisle_eval = pd.DataFrame(user_aisle_eval,columns=['user_id','aisle_id']+aisle_feat_name)
         reorder_feat_name = [f'reorderf_{i}' for i in range(51)]
         user_reorder_eval = pd.DataFrame(user_reorder_eval,columns=['user_id']+reorder_feat_name)
-        data_tr = user_prod_eval.merge(user_aisle_eval,how='left',on=['user_id','aisle_id']).merge(user_reorder_eval,how='left',on=['user_id'])
-        #
+        # user_prod_emb_eval = pd.DataFrame(user_prod_emb_eval,columns=['user_id','product_id']+reorder_feat_name)
+        data_tr = user_prod_eval.merge(user_aisle_eval,how='left',on=['user_id','aisle_id']).merge(user_reorder_eval,
+                                       how='left',on=['user_id'])
         del data_tr['aisle_id'],data_tr['user_id'],data_tr['product_id']
         data_tr = np.array(data_tr).astype(np.float32)
         
@@ -296,8 +304,9 @@ class ProductTrainer(Trainer):
         user_prod_pred['aisle_id'] = user_prod_pred['product_id'].map(self.prod_aisle_dict)
         user_aisle_pred = pd.DataFrame(user_aisle_pred,columns=['user_id','aisle_id']+aisle_feat_name)
         user_reorder_pred = pd.DataFrame(user_reorder_pred,columns=['user_id']+reorder_feat_name)
-        data_eval = user_prod_pred.merge(user_aisle_pred,how='left',on=['user_id','aisle_id']).merge(user_reorder_pred,how='left',on=['user_id'])
-        #
+        # user_prod_emb_pred = pd.DataFrame(user_prod_emb_pred,columns=['user_id','product_id']+reorder_feat_name)
+        data_eval = user_prod_pred.merge(user_aisle_pred,how='left',on=['user_id','aisle_id']).merge(user_reorder_pred,
+                                         how='left',on=['user_id'])
         del data_eval['aisle_id']
 
         user_prod_preds = np.array(data_eval[['user_id','product_id']]).astype(np.int32)
@@ -313,8 +322,7 @@ class ProductTrainer(Trainer):
             return predictions
         
         lagging = self.lagging if np.sign(self.lagging) < 0 else -self.lagging
-        if agg_data is None:
-            agg_data = pd.read_pickle('data/tmp/user_product_info.csv')
+        agg_data = self.build_agg_data('product_id')
         agg_data_te = agg_data[agg_data['eval_set']=='test']
         rows = tqdm(agg_data_te.iterrows(),total=agg_data_te.shape[0],desc='collecting label for evaluation')
         user_prods = []
@@ -347,7 +355,6 @@ class ProductTrainer(Trainer):
 if __name__ == '__main__':
     data = pd.read_csv('data/orders_info.csv')
     products = pd.read_csv('data/products.csv')
-    # z = data.iloc[1000000:2000000]
         
     product_trainer = ProductTrainer(data,
                                     products,
@@ -355,17 +362,15 @@ if __name__ == '__main__':
                                     eval_epoch=1,
                                     epochs=10,
                                     learning_rate=0.002,
-                                    lagging=2,
+                                    lagging=1,
                                     batch_size=512,
                                     early_stopping=2,
                                     warm_start=False,
                                     optim_option='adam')
-    # product_trainer.train(use_amp=False,ev='evaluation/')
-    # product_trainer.predict(save_name='user_product_pred',ev='evaluation/')
-    agg_data = pd.read_pickle('data/tmp/user_product_info.csv')
-    product_trainer.evaluate_or_submit(mode='evaluate',agg_data=agg_data)
+    # product_trainer.train(use_amp=False,ev='')
+    # product_trainer.predict(save_name='user_product_pred',ev='')
+    product_trainer.evaluate_or_submit(mode='submit')
 
 
 
 #%%
-

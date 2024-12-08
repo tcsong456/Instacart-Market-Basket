@@ -134,7 +134,7 @@ class AisleStatsCollector(BaseStatsCollector):
 
 def aisle_data_maker(agg_data,max_len,aisle_dept_dict,mode='train'):
     suffix = mode + '.pkl'
-    save_path = [path+'_'+suffix for path in ['user_aisle','temporal_dict','aisle_data_dict']]
+    save_path = [path+'_'+suffix for path in ['user_aisle','aisle_data_dict','temporal_dict']]
     check_files = np.all([os.path.exists(os.path.join(TMP_PATH,file)) for file in save_path])
     if check_files:
         logger.info('loading temporary data')
@@ -144,8 +144,8 @@ def aisle_data_maker(agg_data,max_len,aisle_dept_dict,mode='train'):
         rand_key = keys[rand_index]
         aisle_info_dim = data_dict[rand_key][0].shape[-1] - 1
         user_aisle = pickle_save_load(os.path.join(TMP_PATH,f'user_aisle_{suffix}'),mode='load')
-        temp_data = pickle_save_load(os.path.join(TMP_PATH,f'temporal_dict_{suffix}'),mode='load')
-        return user_aisle,data_dict,temp_data,aisle_info_dim
+        temp_dict = pickle_save_load(os.path.join(TMP_PATH,f'temporal_dict_{suffix}'),mode='load')
+        return user_aisle,data_dict,temp_dict,aisle_info_dim
     
     user_aisle = []
     temporal_dict,data_dict = {},{}
@@ -243,8 +243,8 @@ def aisle_data_maker(agg_data,max_len,aisle_dept_dict,mode='train'):
             data_dict[(user_id,int(aisle))] = (aisle_info,length)
             
     user_aisle = np.array(user_aisle)
-    
-    save_data  = [user_aisle,temporal_dict,data_dict]
+    #
+    save_data  = [user_aisle,data_dict,temporal_dict]
     for path,file in zip(save_path,save_data):
         path = os.path.join(TMP_PATH,path)
         pickle_save_load(path,file,mode='save') 	
@@ -337,7 +337,7 @@ if __name__ == '__main__':
     trainer = AisleTrainer(data,
                             products,
                             output_dim=50,
-                            lagging=2,
+                            lagging=1,
                             learning_rate=0.002,
                             optim_option='adam',
                             batch_size=256,
@@ -345,17 +345,7 @@ if __name__ == '__main__':
                             early_stopping=2,
                             epochs=10,
                             eval_epoch=1)
-    trainer.train(use_amp=False,ev='evaluation/')
-    trainer.predict(save_name='user_aisle_pred',ev='evaluation/')
+    trainer.train(use_amp=False,ev='')
+    trainer.predict(save_name='user_aisle_pred',ev='')
 
 #%%
-# import torch
-# import numpy as np
-# x = torch.rand(32,100,25)
-# y = torch.randint(1,100,(32,1,1)).long()
-# y = y.expand(-1,1,25)
-# z = torch.gather(x,index=y-1,dim=1).squeeze()
-# np.concatenate([np.random.rand(32,10),np.random.rand(31,10)]).shape
-
-# preds = np.load('metadata/user_product_pred.npy')
-# z = preds[:1000]
