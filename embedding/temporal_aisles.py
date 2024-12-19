@@ -4,7 +4,6 @@ Created on Sat Nov 16 11:50:57 2024
 
 @author: congx
 """
-import gc
 import os
 import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -187,7 +186,6 @@ def aisle_data_maker(agg_data,max_len,aisle_dept_dict,mode='train'):
             cumsum_inorder_ord = []
             cnt_ord = []
             cumsum_cnt_ratio_ord = []
-            # aisle_var_ord = []
             aisle_var_ratio_ord = []
             reorder_ratio_ord = []
             reorder_basket_ratio_ord = []
@@ -311,6 +309,7 @@ class AisleTrainer(Trainer):
         self.dataloader = aisle_dataloader
         self.data_maker = aisle_data_maker
         self.model = AisleLSTM
+        self.model_name = self.model.__class__.__name__
         self.attr = 'aisle'
         
         self.emb_list = ['user_id','aisle_id','department_id']

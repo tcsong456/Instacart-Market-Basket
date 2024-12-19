@@ -7,19 +7,14 @@ Created on Thu Nov  7 19:42:30 2024
 import os
 import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-import gc
-import pickle
 import torch
-import warnings
 import numpy as np
 import pandas as pd
-from torch import optim
 from tqdm import tqdm
 from itertools import product
 import lightgbm as lgb
-from nn_model.product_lstm import ProdLSTM,ProdLSTMV1
-from utils.utils import Timer,logger,pad,pickle_save_load,TMP_PATH
-from torch.cuda.amp import autocast,GradScaler
+from nn_model.product_lstm import ProductTemporalNet
+from utils.utils import logger,pickle_save_load,TMP_PATH
 from itertools import chain
 from embedding.trainer import Trainer
 
@@ -47,21 +42,12 @@ def product_data_maker(data,max_len,prod_aisle_dict,prod_dept_dict,mode='train')
         for _,row in data.iterrows():
             user,products = row['user_id'],row['product_id']
             reorders = row['reordered']
-            # temporal_cols = [row['order_dow'],row['order_hour_of_day'],row['time_zone'],row['days_since_prior_order']]
             days_interval = row['days_since_prior_order']
             if row['eval_set'] == 'test' and mode != 'test':
                 products = products[:-1]
                 reorders = reorders[:-1]
                 days_interval = days_interval[:-1]
-            #     for idx,col_data in enumerate(temporal_cols):
-            #         col_data = col_data[:-1]
-            #         temporal_cols[idx] = col_data
-            # order_dow,order_hour,order_tz,days_interval = temporal_cols
-            # order_dow = pad(np.roll(order_dow,-1)[:-1],max_len)
-            # order_hour = pad(np.roll(order_hour,-1)[:-1],max_len)
-            # order_tz = pad(np.roll(order_tz,-1)[:-1],max_len)
             days_interval = np.roll(days_interval,-1)[:-1]
-            # temp_dict[user] = [order_dow,order_hour,order_tz]
             
             products,next_products = products[:-1],products[-1]
             next_products = next_products.split('_')
@@ -105,13 +91,12 @@ def product_data_maker(data,max_len,prod_aisle_dict,prod_dept_dict,mode='train')
                     reorder_ord.append(reorder_size)
                     reorder_ratio_ord.append(reorder_ratio)
                 
-                next_order_label = np.roll(in_order_ord,-1).reshape(-1,1)
+                next_order_label = np.roll(in_order_ord,-1)
                 next_order_label[-1] = label
                 
                 prod_info = np.stack([in_order_ord,np.array(order_size_ord)/145,np.array(index_ord)/145,index_ratio_ord,
                                       np.array(reorder_prod_ord)/100,reorder_prod_ratio_ord,np.array(reorder_ord)/130,reorder_ratio_ord,
-                                      days_interval/30]).transpose()
-                prod_info = np.concatenate([prod_info,next_order_label],axis=1).astype(np.float16)
+                                      days_interval/30,next_order_label],axis=1).astype(np.float16)
                 length = prod_info.shape[0]
                 feature_dim = prod_info.shape[-1] - 1
                 missing_seq = max_len - length
@@ -231,7 +216,8 @@ class ProductTrainer(Trainer):
                          epochs=epochs,
                          eval_epoch=eval_epoch)
         self.dataloader = product_dataloader
-        self.model = ProdLSTM
+        self.model = ProductTemporalNet
+        self.model_name = self.model.__class__.__name__
         self.data_maker = product_data_maker
         self.emb_list = ['user_id','product_id','aisle_id','department_id']
         self.max_index_info = [data[col].max()+1 for col in self.emb_list] + [self.max_len]
@@ -258,7 +244,7 @@ class ProductTrainer(Trainer):
             'boosting_type': 'gbdt',
             'objective': 'binary',
             'metric': {'binary_logloss'},
-            'learning_rate': .05,
+            'learning_rate': .02,
             'num_leaves': 32,
             'max_depth': 12,
             'feature_fraction': 0.35,
@@ -270,22 +256,24 @@ class ProductTrainer(Trainer):
         else:
             addr = ''
         suffix = [s+'.npy' for s in ['eval','pred']]
-        prefix = ['user_product','user_aisle','user_reorder','user_aisle_order']
+        prefix = ['user_product','user_aisle','user_reorder','aisle_prob','product_prob']
         files = ['_'.join(comb) for comb in product(prefix,suffix)]
         checks = [os.path.exists(os.path.join(f'metadata/{addr}',file)) for file in files]
         assert np.all(checks),'all the eval and pred file of both user_product and user_aisle must be saved'
         
         data = [np.load(os.path.join(f'metadata/{addr}',file)) for file in files]
-        user_prod_eval,user_prod_pred,user_aisle_eval,user_aisle_pred,user_reorder_eval,user_reorder_pred, \
-        user_aisle_order_eval,user_aisle_order_pred = data
+        user_prod_eval,user_prod_pred,user_aisle_eval,user_aisle_pred,user_reorder_eval,user_reorder_pred,\
+        aisle_prob_eval,aisle_prob_pred,product_prob_eval,product_prob_pred = data
+        
         nmf_item_emb = np.load('metadata/nmf_item_emb.npy')
         nmf_item_feat = [f'item{i}' for i in range(24)]
-        item_emb = pd.DataFrame(nmf_item_emb,columns=['product_id']+nmf_item_feat)
-        user_aisle_order_eval = user_aisle_order_eval[:,:-1]
+        nmf_item_emb = pd.DataFrame(nmf_item_emb,columns=['product_id']+nmf_item_feat)
+        
         user_reorder_eval = user_reorder_eval[:,:-1]
         user_aisle_eval = user_aisle_eval[:,:-1]
         user_prod_eval[:,1] -= 1;user_prod_pred[:,1] -= 1
         label = user_prod_eval[:,-1]
+        
         user_prod_eval = np.delete(user_prod_eval,-1,axis=1)
         prod_feat_name = [f'prodf_{i}' for i in range(51)]
         user_prod_eval = pd.DataFrame(user_prod_eval,columns=['user_id','product_id']+prod_feat_name)
@@ -294,10 +282,13 @@ class ProductTrainer(Trainer):
         user_aisle_eval = pd.DataFrame(user_aisle_eval,columns=['user_id','aisle_id']+aisle_feat_name)
         reorder_feat_name = [f'reorderf_{i}' for i in range(51)]
         user_reorder_eval = pd.DataFrame(user_reorder_eval,columns=['user_id']+reorder_feat_name)
-        user_aisle_order_eval = pd.DataFrame(user_aisle_order_eval,columns=['user_id','aisle_id']+aisle_feat_name)
-        data_tr = user_prod_eval.merge(user_aisle_eval,how='left',on=['user_id','aisle_id']).merge(user_reorder_eval,
-                                       how='left',on=['user_id']).merge(user_aisle_order_eval,how='left',
-                                       on=['user_id','aisle_id']).merge(item_emb,how='left',on=['product_id'])
+        aisle_prob_feat = [f'aisle_prob_{i}' for i in range(2)]
+        aisle_prob_eval = pd.DataFrame(aisle_prob_eval,columns=['user_id','aisle_id']+aisle_prob_feat)
+        prod_prob_feat = [f'prod_prob_{i}' for i in range(2)]
+        product_prob_eval = pd.DataFrame(product_prob_eval,columns=['user_id','product_id']+prod_prob_feat)
+        data_tr = user_prod_eval.merge(user_aisle_eval,how='left',on=['user_id','aisle_id']).merge(nmf_item_emb,how='left',
+                                    on=['product_id']).merge(user_reorder_eval,how='left',on=['user_id']).merge(aisle_prob_eval,
+                                    how='left',on=['user_id','aisle_id']).merge(product_prob_eval,how='left',on=['user_id','product_id'])
         del data_tr['aisle_id'],data_tr['user_id'],data_tr['product_id']
         data_tr = np.array(data_tr).astype(np.float32)
         
@@ -305,10 +296,11 @@ class ProductTrainer(Trainer):
         user_prod_pred['aisle_id'] = user_prod_pred['product_id'].map(self.prod_aisle_dict)
         user_aisle_pred = pd.DataFrame(user_aisle_pred,columns=['user_id','aisle_id']+aisle_feat_name)
         user_reorder_pred = pd.DataFrame(user_reorder_pred,columns=['user_id']+reorder_feat_name)
-        user_aisle_order_pred = pd.DataFrame(user_aisle_order_pred,columns=['user_id','aisle_id']+aisle_feat_name)
-        data_eval = user_prod_pred.merge(user_aisle_pred,how='left',on=['user_id','aisle_id']).merge(user_reorder_pred,
-                                         how='left',on=['user_id']).merge(user_aisle_order_pred,how='left',
-                                         on=['user_id','aisle_id']).merge(item_emb,how='left',on=['product_id'])
+        aisle_prob_pred = pd.DataFrame(aisle_prob_pred,columns=['user_id','aisle_id']+aisle_prob_feat)
+        product_prob_pred = pd.DataFrame(product_prob_pred,columns=['user_id','product_id']+prod_prob_feat)
+        data_eval = user_prod_pred.merge(user_aisle_pred,how='left',on=['user_id','aisle_id']).merge(nmf_item_emb,how='left',
+                                        on=['product_id']).merge(user_reorder_pred,how='left',on=['user_id']).merge(aisle_prob_pred,
+                                        how='left',on=['user_id','aisle_id']).merge(product_prob_pred,how='left',on=['user_id','product_id'])
         del data_eval['aisle_id']
 
         user_prod_preds = np.array(data_eval[['user_id','product_id']]).astype(np.int32)

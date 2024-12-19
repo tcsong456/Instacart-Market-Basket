@@ -90,12 +90,14 @@ class Trainer:
     
     def train(self,use_amp=False,ev=''):
         core_info_tr = self.build_data_dl(mode='train')
-        model = self.model(self.input_dim,self.output_dim,*self.max_index_info).to('cuda')
-        model_name = model.__class__.__name__
+        if 'product' in self.model_name.lower():
+            model = self.model(self.input_dim,self.output_dim,*self.max_index_info,32,32,[2]*5,[2**i for i in range(5)])
+        else:
+            model = self.model(self.input_dim,self.output_dim,*self.max_index_info)
+        model = model.to('cuda')
         optimizer = self.optimizer(model.parameters(),lr=self.learning_rate)
         lr_scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer,mode='min',patience=0,factor=0.2,verbose=True)
-        
-        checkpoint_path = get_checkpoint_path(model_name)
+        checkpoint_path = get_checkpoint_path(self.model_name)
         checkpoint_path = f'checkpoint/{checkpoint_path}'
         if self.warm_start:
             checkpoint = torch.load(checkpoint_path)
@@ -201,7 +203,11 @@ class Trainer:
             for i in range(len(value)):
                 value[i] = torch.Tensor(value[i]).long().cuda()
             temporal_dict[key] = value
-        model = self.model(self.input_dim,self.output_dim,*self.max_index_info).to('cuda')
+        if 'product' in self.model_name.lower():
+            model = self.model(self.input_dim,self.output_dim,*self.max_index_info,32,32,[2]*5,[2**i for i in range(5)])
+        else:
+            model = self.model(self.input_dim,self.output_dim,*self.max_index_info)
+        model = model.to('cuda')
         checkpoint = torch.load(self.checkpoint_path)
         model.load_state_dict(checkpoint['model_state_dict'])
         
@@ -216,18 +222,6 @@ class Trainer:
                 temps = [torch.stack(temp) for temp in temps]
                 aux_info = [convert_index_cuda(b) for b in aux_info]
                 h,preds = model(batch,*aux_info,*temps)
-                
-                # if return_preds:
-                #     preds = torch.sigmoid(preds).cpu()
-                #     index = torch.Tensor(batch_lengths).long().reshape(-1,1) - 1
-                #     probs = torch.gather(preds,dim=1,index=index).numpy()
-                    
-                #     users,attrs = aux_info[:2]
-                #     users += 1
-                #     user_attr = np.stack([users,attrs],axis=1)
-                #     user_attr_prob  = np.concatenate([user_attr,probs],axis=1)
-                #     predictions.append(user_attr_prob)
-                # else:
                 pred_emb_te = self._collect_final_time_step(batch_lengths,aux_info,h)
                 predictions.append(pred_emb_te)
         
