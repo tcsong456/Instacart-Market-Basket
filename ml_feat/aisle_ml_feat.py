@@ -57,9 +57,9 @@ class AisleStatsCollector(BaseStatsCollector):
     
     def _pick_data(self,rows):
         data = []
-        true_stats = pickle_save_load(f'data/tmp/{self.attr}_true_stats.pkl',mode='load')
-        fake_stats = pickle_save_load(f'data/tmp/{self.attr}_fake_stats.pkl',mode='load')
-        # true_stats,fake_stats = self.build_stats()
+        # true_stats = pickle_save_load(f'data/tmp/{self.attr}_true_stats.pkl',mode='load')
+        # fake_stats = pickle_save_load(f'data/tmp/{self.attr}_fake_stats.pkl',mode='load')
+        true_stats,fake_stats = self.build_stats()
         rows = tqdm(rows.iterrows(),total=rows.shape[0],desc=f'pickle data for {self.attr} rows')
         for _,row in rows:
             user,days,cnts = row['user_id'],row['days_since_prior_order'],row['counter']
@@ -74,16 +74,16 @@ class AisleStatsCollector(BaseStatsCollector):
                     cnt = cnts[index]
                     cnt = cnt if cnt <= 4 else 4
                     cnt = str(cnt)
-                    key1 = f'cnt_{cnt}_0_31'
+                    # key1 = f'cnt_{cnt}_0_31'
                     key2 = f'cnt_{cnt}_{day_map}'
-                    prob1 = true_stats[cnt][key1][aisle]
+                    # prob1 = true_stats[cnt][key1][aisle]
                     prob2 = true_stats[cnt][key2][aisle]
                 else:
-                     key1 = '0_31'
+                     # key1 = '0_31'
                      key2 = day_map
-                     prob1 = fake_stats[key1][aisle]
+                     # prob1 = fake_stats[key1][aisle]
                      prob2 = fake_stats[key2][aisle]
-                data.append([user,aisle,prob1,prob2])
+                data.append([user,aisle,prob2])
         data = np.array(data).astype(np.float32)
         return data
     
@@ -113,7 +113,8 @@ class AisleStatsCollector(BaseStatsCollector):
     
     def build_stats(self):
         tstats = {str(k):{} for k in [1,2,3,4]}
-        intervals = [(0,31),(0,8),(8,23),(23,31)]
+        # (0,31),
+        intervals = [(0,8),(8,23),(23,31)]
         fstats = {f'{s}_{e}':{} for s,e in intervals}
         for interval in intervals:
             min_interval,max_interval = interval
@@ -130,30 +131,17 @@ class AisleStatsCollector(BaseStatsCollector):
             fake_stats = self.fake_adjacent_stats(min_interval=min_interval,max_interval=max_interval)
             key = f'{min_interval}_{max_interval}'
             fstats[key] = fake_stats
+        # return tstats,fstats
+        for stat,stat_path in zip([fstats,tstats],[f'{self.attr}_fake_stats',f'{self.attr}_true_stats']):
+            path = os.path.join(TMP_PATH,f'{stat_path}.pkl')
+            pickle_save_load(path,stat,mode='save')
         return tstats,fstats
-            
-        # for stat,stat_path in zip([fstats,tstats],[f'{self.attr}_fake_stats',f'{self.attr}_true_stats']):
-        #     path = os.path.join(TMP_PATH,f'{stat_path}.pkl')
-        #     pickle_save_load(path,stat,mode='save')
     
-    def load(self,path=None):
-        if path is None:
-            load_data = []
-            for p in ['true_stats','fake_stats']:
-                path = os.path.join(TMP_PATH,f'{p}.pkl')
-                load_data.append(pickle_save_load(path,mode='load'))
-            return load_data
-
-        load_data = pickle_save_load(path,mode='load')
-        return load_data
 
 if __name__ == '__main__':
     aisle_collector = AisleStatsCollector(path='data/orders_info.csv')
     # aisle_collector.build_stats()
     train_data,eval_data = aisle_collector.summary(agg_path='data/tmp/user_product_info.csv')
-    for stat,stat_path in zip([train_data,eval_data],['aisle_prob_eval','aisle_prob_pred']):
-        path = os.path.join('metadata',f'{stat_path}.npy')
-        np.save(path,stat)
     
     
 

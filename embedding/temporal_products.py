@@ -282,9 +282,9 @@ class ProductTrainer(Trainer):
         user_aisle_eval = pd.DataFrame(user_aisle_eval,columns=['user_id','aisle_id']+aisle_feat_name)
         reorder_feat_name = [f'reorderf_{i}' for i in range(51)]
         user_reorder_eval = pd.DataFrame(user_reorder_eval,columns=['user_id']+reorder_feat_name)
-        aisle_prob_feat = [f'aisle_prob_{i}' for i in range(2)]
+        aisle_prob_feat = [f'aisle_prob_{i}' for i in range(1)]
         aisle_prob_eval = pd.DataFrame(aisle_prob_eval,columns=['user_id','aisle_id']+aisle_prob_feat)
-        prod_prob_feat = [f'prod_prob_{i}' for i in range(2)]
+        prod_prob_feat = [f'prod_prob_{i}' for i in range(1)]
         product_prob_eval = pd.DataFrame(product_prob_eval,columns=['user_id','product_id']+prod_prob_feat)
         data_tr = user_prod_eval.merge(user_aisle_eval,how='left',on=['user_id','aisle_id']).merge(nmf_item_emb,how='left',
                                     on=['product_id']).merge(user_reorder_eval,how='left',on=['user_id']).merge(aisle_prob_eval,

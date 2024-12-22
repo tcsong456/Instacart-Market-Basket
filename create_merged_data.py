@@ -43,6 +43,10 @@ def create_orders_info(path):
     orders['time_zone'] = le.fit_transform(orders['time_zone'])
     del orders['order_dow_text']
     
+    orders['max_order_number'] = orders.groupby('user_id')['order_number'].transform(np.max)
+    orders['reverse_order_number'] = orders['max_order_number'] - orders['order_number']
+    del orders['max_order_number']
+    
     for col,dtype in zip(orders.dtypes.index,orders.dtypes.values):
         if is_float_dtype(dtype):
             orders[col] = orders[col].astype(np.int32)

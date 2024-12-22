@@ -64,15 +64,15 @@ class ProductStatsCollector(BaseStatsCollector):
                 prods.remove(-1)
             day_map = self.mapping[days]
             for prod in prods:
-                key1 = '0_31'
+                # key1 = '0_31'
                 key2 = day_map
                 if prod in cur_prods:
                     s = true_stats
                 else:
                      s = fake_stats
-                prob1 = s[key1][prod]
+                # prob1 = s[key1][prod]
                 prob2 = s[key2][prod]
-                data.append([user,prod,prob1,prob2])
+                data.append([user,prod,prob2])
         data = np.array(data).astype(np.float32)
         return data
     
@@ -117,10 +117,10 @@ class ProductStatsCollector(BaseStatsCollector):
             fstats[key] = fake_stats
         tstats = self._fill(true_stats)
         fstats = self._fill(fstats)
-        return tstats,fstats
-        # for stat,stat_path in zip([fstats,tstats],[f'{self.attr}_fake_stats',f'{self.attr}_true_stats']):
-        #     path = os.path.join(TMP_PATH,f'{stat_path}.pkl')
-        #     pickle_save_load(path,stat,mode='save')
+        # return tstats,fstats
+        for stat,stat_path in zip([fstats,tstats],[f'{self.attr}_fake_stats',f'{self.attr}_true_stats']):
+            path = os.path.join(TMP_PATH,f'{stat_path}.pkl')
+            pickle_save_load(path,stat,mode='save')
         return tstats,fstats
             
 if __name__ == '__main__':

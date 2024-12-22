@@ -116,4 +116,14 @@ class Timer:
         elapsed = end - self.start
         print(f'it took {elapsed:.{self.precision}f} seconds to complete')
 
+def collect_stats(x,agg_func=[]):
+    if len(x) == 0:
+        return []
+    stats = []
+    for func in agg_func:
+        f = getattr(np,func)
+        s = f(x)
+        stats.append(s)
+    return stats
+
 #%%
