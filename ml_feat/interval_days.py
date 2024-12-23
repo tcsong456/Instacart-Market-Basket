@@ -8,6 +8,7 @@ import os
 import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 import gc
+import argparse
 import warnings
 warnings.filterwarnings(action='ignore')
 import bisect
@@ -43,9 +44,30 @@ def stat_interval_days(df):
         prod_intervals[key] = stats
     return prod_intervals
 
+def interval_days_collector(df,interval_stats,mode):
+    user_prods = df.groupby('user_id')['product_id'].apply(set).reset_index()
+    user_prods = user_prods.explode('product_id')
+    tdf = df[df['reverse_order_number']==mode]
+    tdf = tdf.drop_duplicates(['user_id','days_since_prior_order'])[['user_id','days_since_prior_order']]
+    user_prods = pd.merge(user_prods,tdf,how='left',on='user_id')
+    del tdf
+    user_prods = user_prods.merge(interval_stats,how='left',on=['product_id'])
+    user_prods['interval_mean_diff'] = user_prods['days_since_prior_order'] - user_prods['prod_mean']
+    user_prods['interval_median_diff'] = user_prods['days_since_prior_order'] - user_prods['prod_median']
+    user_prods['mean_diff_ratio'] = user_prods['interval_mean_diff'] / user_prods['prod_mean']
+    user_prods['median_diff_ratio'] = user_prods['interval_median_diff'] / user_prods['prod_median'] 
+    del user_prods['days_since_prior_order']
+    return user_prods
+    
+
 if __name__ == '__main__':
-    data = pd.read_csv('data/data_info.csv')
-    data = data[data['reverse_order_nubmer']>0]
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--mode',required=True,choices=[0,1],type=int)
+    args = parser.parse_args()
+    
+    data = pd.read_csv('data/orders_info.csv')
+    data = data[data['reverse_order_number']>args.mode]
+    data = data.sort_values(['user_id','order_number'])
     order_numbers = data.groupby(['user_id','product_id'])['order_number'].apply(list).reset_index()
     sorted_data = data.drop_duplicates(['user_id','order_id']).sort_values(['user_id','order_number'])
     order_days = sorted_data.groupby('user_id')['days_since_prior_order'].apply(list).reset_index()
@@ -57,7 +79,12 @@ if __name__ == '__main__':
     prod_intervals = stat_interval_days(order_info)
     product_interval_stats = pd.DataFrame.from_dict(prod_intervals,orient='index',columns=['min','max','mean','median','std']
                                                     ).add_prefix('prod_').reset_index().rename(columns={'index':'product_id'})
-    product_interval_stats.to_csv('data/tmp/product_interval_stats.csv')
+    suffix = 'test' if args.mode==0 else 'train'
+    user_prod_interval_days = interval_days_collector(data,product_interval_stats,args.mode)
+    user_prod_interval_days.to_csv(f'metadata/prod_interval_stats_{suffix}.csv',index=False)
+    
     
 
 #%%
+
+
