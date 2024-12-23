@@ -16,7 +16,7 @@ import pandas as pd
 import numpy as np
 from tqdm import tqdm
 from collections import defaultdict
-from utils.utils import collect_stats
+from utils.utils import collect_stats,optimize_dtypes
 
 def stat_interval_days(df):
     prod_intervals = defaultdict(list)
@@ -44,19 +44,21 @@ def stat_interval_days(df):
         prod_intervals[key] = stats
     return prod_intervals
 
-def interval_days_collector(df,interval_stats,mode):
+def interval_days_collector(df,tdf,interval_stats):
     user_prods = df.groupby('user_id')['product_id'].apply(set).reset_index()
     user_prods = user_prods.explode('product_id')
-    tdf = df[df['reverse_order_number']==mode]
     tdf = tdf.drop_duplicates(['user_id','days_since_prior_order'])[['user_id','days_since_prior_order']]
-    user_prods = pd.merge(user_prods,tdf,how='left',on='user_id')
-    del tdf
+    user_prods = pd.merge(user_prods,tdf,how='left',on=['user_id'])
     user_prods = user_prods.merge(interval_stats,how='left',on=['product_id'])
     user_prods['interval_mean_diff'] = user_prods['days_since_prior_order'] - user_prods['prod_mean']
     user_prods['interval_median_diff'] = user_prods['days_since_prior_order'] - user_prods['prod_median']
     user_prods['mean_diff_ratio'] = user_prods['interval_mean_diff'] / user_prods['prod_mean']
     user_prods['median_diff_ratio'] = user_prods['interval_median_diff'] / user_prods['prod_median'] 
+    user_prods.loc[np.isinf(user_prods['mean_diff_ratio']),'mean_diff_ratio'] = np.nan
+    user_prods.loc[np.isinf(user_prods['median_diff_ratio']),'median_diff_ratio'] = np.nan
+    user_prods = optimize_dtypes(user_prods)
     del user_prods['days_since_prior_order']
+    
     return user_prods
     
 
@@ -66,6 +68,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
     
     data = pd.read_csv('data/orders_info.csv')
+    target_data = data[data['reverse_order_number']==args.mode]
     data = data[data['reverse_order_number']>args.mode]
     data = data.sort_values(['user_id','order_number'])
     order_numbers = data.groupby(['user_id','product_id'])['order_number'].apply(list).reset_index()
@@ -80,10 +83,8 @@ if __name__ == '__main__':
     product_interval_stats = pd.DataFrame.from_dict(prod_intervals,orient='index',columns=['min','max','mean','median','std']
                                                     ).add_prefix('prod_').reset_index().rename(columns={'index':'product_id'})
     suffix = 'test' if args.mode==0 else 'train'
-    user_prod_interval_days = interval_days_collector(data,product_interval_stats,args.mode)
+    user_prod_interval_days = interval_days_collector(data,target_data,product_interval_stats)
     user_prod_interval_days.to_csv(f'metadata/prod_interval_stats_{suffix}.csv',index=False)
-    
-    
 
 #%%
 
