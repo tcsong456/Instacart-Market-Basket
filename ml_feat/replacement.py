@@ -63,7 +63,8 @@ if __name__ == '__main__':
     
     data = pd.read_csv('data/orders_info.csv')
     data = data[data['reverse_order_number']>=args.mode]
-    cur_prods = data.groupby(['user_id','order_id'])['product_id'].apply(list).reset_index()
+    cur_prods = data.groupby(['user_id','order_id','order_number'])['product_id'].apply(list).reset_index()
+    cur_prods = cur_prods.sort_values(['user_id','order_number'])
     shift_1_prods = cur_prods.groupby('user_id')['product_id'].shift(1)
     shift_1_prods.name = 'shift_1_product'
     shift_2_prods = cur_prods.groupby('user_id')['product_id'].shift(2)

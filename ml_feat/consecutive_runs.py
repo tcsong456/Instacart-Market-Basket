@@ -5,6 +5,7 @@ Created on Mon Dec 23 17:49:57 2024
 @author: congx
 """
 import gc
+import argparse
 import pandas as pd
 import numpy as np
 from tqdm import tqdm
@@ -39,6 +40,8 @@ def x_to_x(data,unq_dict):
     true_stat = convertion(true_stat)
     fake_stat = convertion(fake_stat)
     return true_stat,fake_stat
+
+
 
 def xx_to_x(data,unq_dict):
     stat_111 = defaultdict(lambda:defaultdict(int))
@@ -140,13 +143,17 @@ def xxx_to_x(data,unq_dict):
     stat_0011 = convertion(stat_0011)
     return stat_1111,stat_1101,stat_1001,stat_1011,stat_0111,stat_0101,stat_0001,stat_0011
                             
-      
 if __name__ == '__main__':
-    data = pd.read_csv('data/orders_info.csv')
-    data = data[data['reverse_order_number']>0]
-    unique_data_dict = data.groupby('user_id')['product_id'].apply(set).to_dict()
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--mode',required=True,choices=[0,1],type=int)
+    args = parser.parse_args()
     
-    user_prods = data.groupby(['user_id','order_id'])['product_id'].apply(list).reset_index()
+    data = pd.read_csv('data/orders_info.csv')
+    df = data[data['reverse_order_number']>args.mode]
+    unique_data_dict = df.groupby('user_id')['product_id'].apply(set).to_dict()
+    
+    user_prods = df.groupby(['user_id','order_id','order_number'])['product_id'].apply(list).reset_index()
+    user_prods = user_prods.sort_values(['user_id','order_number'])
     prods_shift_1 = user_prods.groupby('user_id')['product_id'].shift(-1)
     prods_shift_1.name = 'shift_1_products'
     adjacent_basket_1 = pd.concat([user_prods,prods_shift_1],axis=1)
@@ -164,11 +171,92 @@ if __name__ == '__main__':
     adjacent_basket_3 = pd.concat([user_prods,prods_shift_1,prods_shift_2,prods_shift_3],axis=1)
     adjacent_basket_3.dropna(axis=0,inplace=True)
     stat_1111,stat_1101,stat_1001,stat_1011,stat_0111,stat_0101,stat_0001,stat_0011 = xxx_to_x(adjacent_basket_3,unique_data_dict)
+    
+    probs = dict()
+    df = data[data['reverse_order_number']==args.mode+1]
+    target_1_grp = df.groupby('user_id')['product_id'].apply(list).reset_index()
+    rows = tqdm(target_1_grp.iterrows(),total=target_1_grp.shape[0],desc='collecting stats for two consecutive run of products')
+    for _,row in rows:
+        user,products = row['user_id'],row['product_id']
+        unq_products = unique_data_dict[user]
+        for prod in unq_products:
+            if prod in products:
+                prob = stat_11.get(prod,np.nan)
+            else:
+                prob = stat_01.get(prod,np.nan)
+            probs[(user,prod)] = prob
+
+    probs_xx = pd.DataFrame.from_dict(probs,orient='index',columns=['prob_xx']).reset_index()
+    probs_xx['user_id'],probs_xx['product_id'] = zip(*probs_xx['index'])
+    del probs_xx['index']
+
+    probs = dict()
+    df = data[data['reverse_order_number']==args.mode+2]
+    target_2_grp = df.groupby('user_id')['product_id'].apply(list).reset_index().rename(columns={'product_id':'shift_1_products'})
+    target_grp = pd.merge(target_2_grp,target_1_grp,how='left',on=['user_id'])
+    rows = tqdm(target_grp.iterrows(),total=target_grp.shape[0],desc='collecting stats for three consecutive run of products')
+    for _,row in rows:
+        user,products,s1_products = row['user_id'],row['product_id'],row['shift_1_products']
+        unq_products = unique_data_dict[user]
+        for prod in unq_products:
+            if prod in s1_products:
+                if prod in products:
+                    prob = stat_111.get(prod,np.nan)
+                else:
+                    prob = stat_101.get(prod,np.nan)
+            else:
+                if prod in products:
+                    prob = stat_011.get(prod,np.nan)
+                else:
+                    prob = stat_001.get(prod,np.nan)
+            probs[(user,prod)] = prob
+    probs_xxx = pd.DataFrame.from_dict(probs,orient='index',columns=['prob_xxx']).reset_index()
+    probs_xxx['user_id'],probs_xxx['product_id'] = zip(*probs_xxx['index'])
+    del probs_xxx['index']
+    
+    probs = dict()
+    df = data[data['reverse_order_number']==args.mode+3]
+    target_3_grp = df.groupby('user_id')['product_id'].apply(list).reset_index().rename(columns={'product_id':'shift_2_products'})
+    target_grp = target_3_grp.merge(target_2_grp,how='left',on=['user_id']).merge(target_1_grp,how='left',on=['user_id'])
+    target_grp.dropna(axis=0,inplace=True)
+    rows = tqdm(target_grp.iterrows(),total=target_grp.shape[0],desc='collecting stats for three consecutive run of products')
+    for _,row in rows:
+        user,products,s1_products,s2_products = row['user_id'],row['product_id'],row['shift_1_products'],row['shift_2_products']
+        unq_products = unique_data_dict[user]
+        for prod in unq_products:
+            if prod in s2_products:
+                if prod in s1_products:
+                    if prod in products:
+                        prob = stat_1111.get(prod,np.nan)
+                    else:
+                        prob = stat_1101.get(prod,np.nan)
+                else:
+                    if prod in s1_products:
+                        prob = stat_1011.get(prod,np.nan)
+                    else:
+                        prob = stat_1001.get(prod,np.nan)
+            else:
+                if prod in s1_products:
+                    if prod in s2_products:
+                        prob = stat_0111.get(prod,np.nan)
+                    else:
+                        prob = stat_0101.get(prod,np.nan)
+                else:
+                    if prod in s2_products:
+                        prob = stat_0011.get(prod,np.nan)
+                    else:
+                        prob = stat_0001.get(prod,np.nan)
+            probs[(user,prod)] = prob
+    probs_xxxx = pd.DataFrame.from_dict(probs,orient='index',columns=['prob_xxxx']).reset_index()
+    probs_xxxx['user_id'],probs_xxxx['product_id'] = zip(*probs_xxxx['index'])
+    del probs_xxxx['index']
+    
+    suffix = 'test' if args.mode==0 else 'train'
+    probs = probs_xx.merge(probs_xxx,how='left',on=['user_id','product_id']).merge(probs_xxxx,how='left',on=['user_id','product_id'])
+    probs.to_csv(f'metadata/probs_xxx_{suffix}.csv',index=False)
 
 #%%
-# from utils.utils import optimize_dtypes
-# single_true_stat,single_fake_stat = x_to_x(adjacent_basket_1,unique_data_dict)
-# x = pd.read_csv('metadata/prod_interval_stats_test.csv')
-# adjacent_basket_3
-# optimize_dtypes(x).dtypes
+# df = data[data['reverse_order_number']>1]
+# df['product_id'].unique().min()
+
 
