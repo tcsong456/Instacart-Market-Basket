@@ -1,2 +1,2 @@
-python ml_feat/consecutive_runs.py --mode 1
-python ml_feat/consecutive_runs.py --mode 0
+python ml_feat/cart_order.py --mode 1
+python ml_feat/cart_order.py --mode 0

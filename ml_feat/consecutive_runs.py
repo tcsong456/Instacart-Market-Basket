@@ -256,7 +256,6 @@ if __name__ == '__main__':
     probs.to_csv(f'metadata/probs_xxx_{suffix}.csv',index=False)
 
 #%%
-# df = data[data['reverse_order_number']>1]
-# df['product_id'].unique().min()
+
 
 
