@@ -7,7 +7,6 @@ Created on Sun Dec 22 12:24:54 2024
 import os
 import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-import gc
 import argparse
 import warnings
 warnings.filterwarnings(action='ignore')
@@ -60,7 +59,15 @@ def interval_days_collector(df,tdf,interval_stats):
     del user_prods['days_since_prior_order']
     
     return user_prods
-    
+
+def data_builder(df):
+    order_numbers = df.groupby(['user_id','product_id'])['order_number'].apply(list).reset_index()
+    sorted_data = df.drop_duplicates(['user_id','order_id']).sort_values(['user_id','order_number'])
+    order_days = sorted_data.groupby('user_id')['days_since_prior_order'].apply(list).reset_index()
+    order_info = pd.merge(order_numbers,order_days,how='left',on='user_id')
+    max_order_numbers = df.groupby('user_id')['order_number'].max().reset_index().rename(columns={'order_number':'order_number_max'})
+    order_info = order_info.merge(max_order_numbers,how='left',on=['user_id'])
+    return order_info
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -69,23 +76,26 @@ if __name__ == '__main__':
     
     data = pd.read_csv('data/orders_info.csv')
     target_data = data[data['reverse_order_number']==args.mode]
-    data = data[data['reverse_order_number']>args.mode]
-    data = data.sort_values(['user_id','order_number'])
-    order_numbers = data.groupby(['user_id','product_id'])['order_number'].apply(list).reset_index()
-    sorted_data = data.drop_duplicates(['user_id','order_id']).sort_values(['user_id','order_number'])
-    order_days = sorted_data.groupby('user_id')['days_since_prior_order'].apply(list).reset_index()
-    order_info = pd.merge(order_numbers,order_days,how='left',on='user_id')
-    max_order_numbers = data.groupby('user_id')['order_number'].max().reset_index().rename(columns={'order_number':'order_number_max'})
-    order_info = order_info.merge(max_order_numbers,how='left',on=['user_id'])
-    del sorted_data,order_days,max_order_numbers
-    gc.collect()
+    df = data[data['reverse_order_number']>args.mode]
+    df = df.sort_values(['user_id','order_number'])
+    order_info = data_builder(df)
     prod_intervals = stat_interval_days(order_info)
     product_interval_stats = pd.DataFrame.from_dict(prod_intervals,orient='index',columns=['min','max','mean','median','std']
                                                     ).add_prefix('prod_').reset_index().rename(columns={'index':'product_id'})
-    suffix = 'test' if args.mode==0 else 'train'
     user_prod_interval_days = interval_days_collector(data,target_data,product_interval_stats)
-    user_prod_interval_days.to_csv(f'metadata/prod_interval_stats_{suffix}.csv',index=False)
+    
+    # df = data[(data['reverse_order_number']>args.mode)&(data['reverse_order_number']<=args.mode+5)]
+    # df = df.sort_values(['user_id','order_number'])
+    # order_info = data_builder(df)
+    # prod_intervals = stat_interval_days(order_info)
+    # product_interval_stats = pd.DataFrame.from_dict(prod_intervals,orient='index',columns=['min','max','mean','median','std']
+    #                                                 ).add_prefix('prod_').reset_index().rename(columns={'index':'product_id'})
+    # user_prod_interval_days_recent = interval_days_collector(data,target_data,product_interval_stats)
+    # user_prod_interval_days_recent = user_prod_interval_days_recent.set_index(['user_id','product_id']).add_suffix('_5').reset_index()
+    # user_prod_interval_days = pd.merge(user_prod_interval_days,user_prod_interval_days_recent,how='left',on=['product_id'])
+    
+    suffix = 'test' if args.mode==0 else 'train'
+    user_prod_interval_days.to_csv(f'metadata/prod_interval_days_{suffix}.csv',index=False)
 
 #%%
-
 

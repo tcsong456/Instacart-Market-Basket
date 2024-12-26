@@ -11,12 +11,14 @@ from tqdm import tqdm
 from collections import defaultdict
 
 def convert(df,col,prob_col):
-    temp_dict = defaultdict(lambda:defaultdict(float))
+    temp_prob_dict = defaultdict(lambda:defaultdict(float))
+    temp_cnt_dict = defaultdict(lambda:defaultdict(float))
     rows = tqdm(df.iterrows(),total=df.shape[0],desc='converting df to dictionary')
     for _,row in rows:
         prod,tmp_col,prob = row['product_id'],row[col],row[prob_col] 
-        temp_dict[prod][tmp_col] = prob
-    return temp_dict
+        temp_prob_dict[prod][tmp_col] = prob
+        temp_cnt_dict[prod][tmp_col] = row['cnt']
+    return temp_prob_dict,temp_cnt_dict
 
 def build_tmp(df,col):
     attr_sum = df.groupby(['product_id',col])['counter'].sum().reset_index().rename(columns={'counter':'cnt'})
@@ -44,10 +46,10 @@ if __name__ == '__main__':
     # user_prod_tz = build_up_tmp(df, 'time_zone')
     unique_prod_dict = df.groupby('user_id')['product_id'].apply(set).to_dict()
     dow_data = build_tmp(df,'order_dow')
-    dow_dict = convert(dow_data,'order_dow','order_dow_prob')
+    dow_prob_dict,dow_cnt_dict = convert(dow_data,'order_dow','order_dow_prob')
     
     tz_data = build_tmp(df,'time_zone')
-    tz_dict = convert(tz_data,'time_zone','time_zone_prob')
+    tz_prob_dict,tz_cnt_dict = convert(tz_data,'time_zone','time_zone_prob')
     
     temporal_dict = {}
     df = data[data['reverse_order_number']== args.mode]
@@ -57,18 +59,18 @@ if __name__ == '__main__':
         user = row['user_id']
         dow,tz = row['order_dow'],row['time_zone']
         for prod in unique_prod_dict[user]:
-            dow_prob = dow_dict[prod].get(dow,np.nan)
-            tz_prob = tz_dict[prod].get(tz,np.nan)
-            temporal_dict[(user,prod)] = [dow_prob,tz_prob]
-    temp_data = pd.DataFrame.from_dict(temporal_dict,orient='index',columns=['dow_prob','tz_prob']).reset_index()
+            dow_prob = dow_prob_dict[prod].get(dow,np.nan)
+            tz_prob = tz_prob_dict[prod].get(tz,np.nan)
+            dow_cnt = dow_cnt_dict[prod].get(dow,np.nan)
+            tz_cnt = tz_cnt_dict[prod].get(tz,np.nan)
+            temporal_dict[(user,prod)] = [dow_prob,dow_cnt,tz_prob,tz_cnt]
+    temp_data = pd.DataFrame.from_dict(temporal_dict,orient='index',columns=['dow_prob','dow_cnt','tz_prob','tz_cnt']).reset_index()
     temp_data['user_id'],temp_data['product_id'] = zip(*temp_data['index'])
     del temp_data['index']
     suffix = 'test' if args.mode==0 else 'train'
     temp_data.to_csv(f'metadata/dow_tz_prob_{suffix}.csv',index=False)
 
 #%%
-# x = temp_data.merge(user_prod_dow[['user_id','product_id','order_dow','order_dow_dist']],how='left',on=['user_id','product_id','order_dow']).merge(
-#     user_prod_tz[['user_id','product_id','time_zone','time_zone_dist']],how='left',on=['user_id','product_id','time_zone'])
 
 
 
