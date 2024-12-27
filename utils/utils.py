@@ -126,4 +126,15 @@ def collect_stats(x,agg_func=[]):
         stats.append(s)
     return stats
 
+def df_stats_agg(x,col):
+    popup_stats = []
+    user_prod_grp = x.groupby('product_id')[col]
+    for func in ['min','max','mean','median','std']:
+        f = getattr(user_prod_grp,func)
+        stat = f()
+        stat.name = f'{col}_{func}'
+        popup_stats.append(stat)
+    popup_stats = pd.concat(popup_stats,axis=1)
+    return popup_stats
+
 #%%

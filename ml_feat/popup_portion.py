@@ -9,17 +9,7 @@ import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 import argparse
 import pandas as pd
-
-def df_stats_agg(x,col):
-    popup_stats = []
-    user_prod_grp = x.groupby('product_id')[col]
-    for func in ['min','max','mean','median','std']:
-        f = getattr(user_prod_grp,func)
-        stat = f()
-        stat.name = f'{col}_{func}'
-        popup_stats.append(stat)
-    popup_stats = pd.concat(popup_stats,axis=1)
-    return popup_stats
+from utils.utils import df_stats_agg
 
 def popup_data(df):
     user_prod = df.groupby(['user_id','product_id']).size()
@@ -44,10 +34,10 @@ if __name__ == '__main__':
     args = parser.parse_args()
     
     data = pd.read_csv('data/orders_info.csv')
-    df = data[data['reverse_order_number']>1] 
+    df = data[data['reverse_order_number']>args.mode] 
     user_prod_popup = popup_data(df)
     
-    df = data[(data['reverse_order_number']>1)&(data['reverse_order_number']<=1+5)] 
+    df = data[(data['reverse_order_number']>args.mode)&(data['reverse_order_number']<=args.mode+5)] 
     user_prod_popup_5 = popup_data(df).add_suffix('_5')
     user_prod_popup = pd.concat([user_prod_popup,user_prod_popup_5],axis=1).reset_index()
     
