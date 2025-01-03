@@ -52,7 +52,7 @@ if __name__ == '__main__':
     data = data[data['eval_set']!='test']
     items = data['product_id'].max()
     interaction_matrix = adjacent_occurrence(data,items)
-    nmf = NMF(n_components=24,max_iter=800)
+    nmf = NMF(n_components=24,max_iter=1000)
     item_emb = nmf.fit_transform(interaction_matrix)
     feat_emb = nmf.components_
     item_ids = np.array([i for i in range(1,items+1)]).reshape(-1,1)
@@ -60,14 +60,3 @@ if __name__ == '__main__':
     np.save('metadata/nmf_item_emb.npy',item_emb)
     
 #%%
-# item_embedding = TSNE(n_components=2,random_state=3398).fit_transform(item_emb.T)
-# plt.scatter(item_embedding[:,0],item_embedding[:,1])
-# plt.title('Item_embedding(t-SNE)')
-# plt.xlabel('Dimention1')
-# plt.ylabel('Dimention2')
-# np.linalg.norm(np.dot(user_emb,item_emb)
-
-
-#%%
-# interaction_matrix = sparse.csr_matrix(interaction_matrix)
-interaction_matrix.max()

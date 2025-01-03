@@ -40,18 +40,31 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--mode',required=True,choices=[0,1],type=int)
     args = parser.parse_args()
+    suffix = 'test' if args.mode==0 else 'train'
     
     data = pd.read_csv('data/orders_info.csv')
-    df = data[data['reverse_order_number']>args.mode]
+    data_tr = data[data['cate']=='train']
+    data_te = data[data['cate']=='test']
+    if suffix == 'train':
+        df_tr = data_tr[data_tr['reverse_order_number']>0]
+        df_te = data_te[data_te['reverse_order_number']>1]
+        df = pd.concat([df_tr,df_te])
+    else:
+        df = data_te[data_te['reverse_order_number']>0]
     user_prod_orn = df.groupby(['user_id','product_id'])['order_number'].apply(list).reset_index()
     intervals = interval_orders(user_prod_orn).reset_index().rename(columns={'index':'product_id'})
     
-    df = data[(data['reverse_order_number']>args.mode)&(data['reverse_order_number']<=args.mode+5)]
+    if suffix == 'train':
+        df_tr = data_tr[(data_tr['reverse_order_number']>0)&(data_tr['reverse_order_number']<=5)]
+        df_te = data_te[(data_te['reverse_order_number']>1)&(data_te['reverse_order_number']<=6)]
+        df = pd.concat([df_tr,df_te])
+    else:
+        df = data_te[(data_te['reverse_order_number']>0)&(data_te['reverse_order_number']<=5)]
+        
     user_prod_orn = df.groupby(['user_id','product_id'])['order_number'].apply(list).reset_index()
     intervals_5 = interval_orders(user_prod_orn).add_suffix('_5').reset_index().rename(columns={'index':'product_id'})
     intervals = pd.merge(intervals,intervals_5,how='left',on=['product_id'])
     
-    suffix = 'test' if args.mode==0 else 'train'
     intervals.to_csv(f'metadata/intervals_{suffix}.csv',index=False)
 
 

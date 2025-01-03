@@ -96,7 +96,6 @@ class ProductTemporalNet(ProdLSTM):
     
     def forward(self,inputs,users,products,aisles,depts,dows,hours,tzs,days):
         lstm_temp,x = super().forward(inputs,users,products,aisles,depts,dows,hours,tzs,days)
-        
         skip_outputs = []
         input_seq = x.shape[1]
         x = self.init_linear(x)

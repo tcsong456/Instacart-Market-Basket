@@ -32,16 +32,27 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--mode',required=True,choices=[0,1],type=int)
     args = parser.parse_args()
-    
+    suffix = 'test' if args.mode==0 else 'train'
     data = pd.read_csv('data/orders_info.csv')
-    df = data[data['reverse_order_number']>args.mode] 
+    data_tr = data[data['cate']=='train']
+    data_te = data[data['cate']=='test']
+    if suffix == 'train':
+        df_tr = data_tr[data_tr['reverse_order_number']>0]
+        df_te = data_te[data_te['reverse_order_number']>1]
+        df = pd.concat([df_tr,df_te])
+    else:
+        df = data_te[data_te['reverse_order_number']>0]
     user_prod_popup = popup_data(df)
     
-    df = data[(data['reverse_order_number']>args.mode)&(data['reverse_order_number']<=args.mode+5)] 
+    if suffix == 'train':
+        df_tr = data_tr[(data_tr['reverse_order_number']>0)&(data_tr['reverse_order_number']<=5)]
+        df_te = data_te[(data_te['reverse_order_number']>1)&(data_te['reverse_order_number']<=6)]
+        df = pd.concat([df_tr,df_te])
+    else:
+        df = data_te[(data_te['reverse_order_number']>0)&(data_te['reverse_order_number']<=5)]
     user_prod_popup_5 = popup_data(df).add_suffix('_5')
     user_prod_popup = pd.concat([user_prod_popup,user_prod_popup_5],axis=1).reset_index()
     
-    suffix = 'test' if args.mode==0 else 'train'
     user_prod_popup.to_csv(f'metadata/user_popup_{suffix}.csv',index=False)
     
     

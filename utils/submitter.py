@@ -4,9 +4,15 @@ Created on Fri Nov 22 14:49:04 2024
 
 @author: congx
 """
+import os
+import sys
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 import pandas as pd
 import numpy as np
 from tqdm import tqdm
+import lightgbm as lgb
+from itertools import product
+from utils import optimize_dtypes
 
 class F1Optimizer():
 
@@ -61,8 +67,118 @@ class F1Optimizer():
         best_k = ix_max[1]
 
         return best_k, predNone, max_f1
+
+def merge(data,mode='train'):
+    data_tr = data[data['cate']=='train']
+    data_te = data[data['cate']=='test']
+    if mode == 'train':
+        df_tr = data_tr[data_tr['reverse_order_number']>0]
+        df_te = data_te[data_te['reverse_order_number']>1]
+        df = pd.concat([df_tr,df_te])
+    else:
+        df = data_te[data_te['reverse_order_number']>0]
+    df = df.groupby(['user_id'])['product_id'].apply(set).apply(list).reset_index()
+    df = df.explode('product_id')
+    files = os.listdir('metadata')
+    suffix = f'{mode}.csv'
+    for file in files:
+        if file.endswith(suffix):
+            f = pd.read_csv(f'metadata/{file}')
+            # f = optimize_dtypes(f)
+            cols = f.columns.tolist()
+            if 'product_id' in cols and 'user_id' in cols:
+                df = df.merge(f,how='left',on=['user_id','product_id'])
+            elif 'product_id' in cols:
+                df = df.merge(f,how='left',on=['product_id'])
+            else:
+                raise KeyError('product_id must be in the data')
+    return df
+
+# def merge(data,mode='train'):
+#     data_tr = data[data['cate']=='train']
+#     data_te = data[data['cate']=='test']
+#     if mode == 'train':
+#         df_tr = data_tr[data_tr['reverse_order_number']>0]
+#         df_te = data_te[data_te['reverse_order_number']>1]
+#         df = pd.concat([df_tr,df_te])
+#     else:
+#         df = data_te[data_te['reverse_order_number']>0]
+#     df = df.groupby(['user_id'])['product_id'].apply(set).apply(list).reset_index()
+#     df = df.explode('product_id')
+#     files = [f'aff_{mode}',f'dow_tz_prob_{mode}',f'N_order_{mode}']
+#     files = list(map(lambda x:x+'.csv',files))
+#     for file in files:
+#         f = pd.read_csv(f'metadata/{file}')
+#         df = df.merge(f,how='left',on=['user_id','product_id'])
+#     return df
+
+def make_submissions(data):
+    params = {
+        'task': 'train',
+        'boosting_type': 'gbdt',
+        'objective': 'binary',
+        'metric': {'binary_logloss'},
+        'learning_rate': .02,
+        'num_leaves': 32,
+        'max_depth': 12,
+        'feature_fraction': 0.35,
+        'bagging_fraction': 0.9,
+        'bagging_freq': 2,
+    }
     
-def make_submissions(preds):
+    data_tr = merge(data)
+    data_te = data[data['cate']=='test']
+    data_te = merge(data_te,mode='test')
+    
+    products = pd.read_csv('data/products.csv')
+    prod_aisle_dict = products.set_index('product_id')['aisle_id'].to_dict()
+    columns = lambda prefix,num_cols:[f'{prefix}_{i}' for i in range(num_cols)]
+    suffix = ['eval','pred']
+    suffix = list(map(lambda x:x+'.npy',suffix))
+    prefix = ['product','aisle','reorder']
+    prefix = list(map(lambda x:'user_'+x,prefix))
+    npy_files = list(map(np.load,[os.path.join('metadata',('_'.join(p))) for p in product(prefix,suffix)]))
+    user_prod_eval,user_prod_pred,user_aisle_eval,user_aisle_pred,user_reorder_eval,user_reorder_pred = npy_files
+    user_prod_eval[:,1] -= 1;user_prod_pred[:,1] -= 1
+    label = user_prod_eval[:,-1]
+    user_prod_eval  = user_prod_eval[:,:-1]
+    prod_feats = columns('prod',51)
+    user_prod_eval = pd.DataFrame(user_prod_eval,columns=['user_id','product_id']+prod_feats)
+    user_prod_eval['aisle_id'] = user_prod_eval['product_id'].map(prod_aisle_dict)
+    user_prod_pred = pd.DataFrame(user_prod_pred,columns=['user_id','product_id']+prod_feats)
+    user_prod_pred['aisle_id'] = user_prod_pred['product_id'].map(prod_aisle_dict)
+    user_aisle_eval = user_aisle_eval[:,:-1]
+    aisle_feats = columns('aisle',51)
+    user_aisle_eval = pd.DataFrame(user_aisle_eval,columns=['user_id','aisle_id']+aisle_feats)
+    user_aisle_pred = pd.DataFrame(user_aisle_pred,columns=['user_id','aisle_id']+aisle_feats)
+    user_reorder_eval = user_reorder_eval[:,:-1]
+    reorder_feats = columns('reorder',51)
+    user_reorder_eval = pd.DataFrame(user_reorder_eval,columns=['user_id']+reorder_feats)
+    user_reorder_pred = pd.DataFrame(user_reorder_pred,columns=['user_id']+reorder_feats)
+    nmf_emb = np.load('metadata/nmf_item_emb.npy')
+    nmf_feat = columns('nmf',24)
+    nmf_emb = pd.DataFrame(nmf_emb,columns=['product_id']+nmf_feat)
+    user_prod_eval = user_prod_eval.merge(user_aisle_eval,how='left',on=['user_id','aisle_id']).merge(user_reorder_eval,
+                                          how='left',on=['user_id']).merge(nmf_emb,how='left',on=['product_id'])
+
+    user_prod_pred = user_prod_pred.merge(user_aisle_pred,how='left',on=['user_id','aisle_id']).merge(user_reorder_pred,
+                                          how='left',on=['user_id']).merge(nmf_emb,how='left',on=['product_id'])
+    user_prods = user_prod_pred[['user_id','product_id']]
+    
+    user_prod_eval = user_prod_eval.merge(data_tr,how='left',on=['user_id','product_id']).fillna(-1)
+    del user_prod_eval['user_id'],user_prod_eval['product_id'],user_prod_eval['aisle_id']
+    user_prod_eval = np.array(user_prod_eval).astype(np.float32)
+    user_prod_pred = user_prod_pred.merge(data_te,how='left',on=['user_id','product_id']).fillna(-1)
+    del user_prod_pred['user_id'],user_prod_pred['product_id'],user_prod_pred['aisle_id']
+    user_prod_pred = np.array(user_prod_pred).astype(np.float32)
+    
+    dtrain = lgb.Dataset(user_prod_eval,label=label)
+    model = lgb.train(params,dtrain,num_boost_round=500)
+    predictions = model.predict(user_prod_pred)
+    user_prods['predictions'] = predictions
+    return user_prods
+
+def submit(preds):
     predictions = np.empty([preds.shape[0],2],dtype=object)
     rows = tqdm(preds.iterrows(),total=preds.shape[0],desc='making submissions')
     for ind,row in rows:
@@ -90,9 +206,8 @@ def make_submissions(preds):
 
 if __name__ == '__main__':
     data = pd.read_csv('data/orders_info.csv')
+    predictions = make_submissions(data)
     test_data = data[data['eval_set']=='test']
-
-    predictions = pd.read_csv('metadata/user_product_prob.csv')
     predictions['user_id'] = predictions['user_id'].astype(np.int32)
     predictions['product_id'] = predictions['product_id'].astype(np.int32)
     user_order_dict = test_data.set_index('user_id')['order_id'].to_dict()
@@ -100,7 +215,16 @@ if __name__ == '__main__':
     pred_prd = predictions.groupby('order_id')['product_id'].apply(list)
     pred_pred = predictions.groupby('order_id')['predictions'].apply(list)
     preds = pd.concat([pred_prd,pred_pred],axis=1).reset_index()
-    submissions = make_submissions(preds)
+    submissions = submit(preds)
     submissions.to_csv('metadata/submissions.csv',index=False)
 
 #%%
+
+
+
+
+
+
+
+
+

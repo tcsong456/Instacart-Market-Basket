@@ -164,9 +164,16 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--mode',required=True,choices=[0,1],type=int)
     args = parser.parse_args()
-    
+    suffix = 'test' if args.mode==0 else 'train'
     data = pd.read_csv('data/orders_info.csv')
-    df = data[data['reverse_order_number']>args.mode]
+    data_tr = data[data['cate']=='train']
+    data_te = data[data['cate']=='test']
+    if suffix == 'train':
+        df_tr = data_tr[data_tr['reverse_order_number']>0]
+        df_te = data_te[data_te['reverse_order_number']>1]
+        df = pd.concat([df_tr,df_te])
+    else:
+        df = data_te[data_te['reverse_order_number']>0]
     unique_data_dict = df.groupby('user_id')['product_id'].apply(set).to_dict()
     
     user_prods = df.groupby(['user_id','order_id','order_number'])['product_id'].apply(list).reset_index()
@@ -193,7 +200,12 @@ if __name__ == '__main__':
     stat_prob_0011 = xxx_to_x(adjacent_basket_3,unique_data_dict)
     
     probs = dict()
-    df = data[data['reverse_order_number']==args.mode+1]
+    if suffix == 'train':
+        df_tr = data_tr[data_tr['reverse_order_number']==1]
+        df_te = data_te[data_te['reverse_order_number']==2]
+        df = pd.concat([df_tr,df_te])
+    else:
+        df = data_te[data_te['reverse_order_number']==1]
     target_1_grp = df.groupby('user_id')['product_id'].apply(list).reset_index()
     rows = tqdm(target_1_grp.iterrows(),total=target_1_grp.shape[0],desc='collecting stats for two consecutive run of products')
     for _,row in rows:
@@ -213,7 +225,13 @@ if __name__ == '__main__':
     del probs_xx['index']
 
     probs = dict()
-    df = data[data['reverse_order_number']==args.mode+2]
+    df = data[data['reverse_order_number']==args.mode+1]
+    if suffix == 'train':
+        df_tr = data_tr[data_tr['reverse_order_number']==2]
+        df_te = data_te[data_te['reverse_order_number']==3]
+        df = pd.concat([df_tr,df_te])
+    else:
+        df = data_te[data_te['reverse_order_number']==2]
     target_2_grp = df.groupby('user_id')['product_id'].apply(list).reset_index().rename(columns={'product_id':'shift_1_products'})
     target_grp = pd.merge(target_2_grp,target_1_grp,how='left',on=['user_id'])
     rows = tqdm(target_grp.iterrows(),total=target_grp.shape[0],desc='collecting stats for three consecutive run of products')
@@ -241,7 +259,13 @@ if __name__ == '__main__':
     del probs_xxx['index']
     
     probs = dict()
-    df = data[data['reverse_order_number']==args.mode+3]
+    df = data[data['reverse_order_number']==args.mode+1]
+    if suffix == 'train':
+        df_tr = data_tr[data_tr['reverse_order_number']==3]
+        df_te = data_te[data_te['reverse_order_number']==4]
+        df = pd.concat([df_tr,df_te])
+    else:
+        df = data_te[data_te['reverse_order_number']==3]
     target_3_grp = df.groupby('user_id')['product_id'].apply(list).reset_index().rename(columns={'product_id':'shift_2_products'})
     target_grp = target_3_grp.merge(target_2_grp,how='left',on=['user_id']).merge(target_1_grp,how='left',on=['user_id'])
     target_grp.dropna(axis=0,inplace=True)
@@ -290,7 +314,5 @@ if __name__ == '__main__':
     probs.to_csv(f'metadata/probs_xxx_{suffix}.csv',index=False)
 
 #%%
-# x = pd.read_csv('metadata/rpl_prods_train.csv')
-# z = x.iloc[:1000]
 
 

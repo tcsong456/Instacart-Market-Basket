@@ -50,27 +50,44 @@ def build_withinN_order(df):
             interval_n_dict[prod][int(ind)]['prob'] = prob
     return interval_n_dict
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--mode',required=True,choices=[0,1],type=int)
-    args = parser.parse_args()
-    
-    data = pd.read_csv('data/orders_info.csv')
-    df = data[data['reverse_order_number']>args.mode]
-    user_prod_orn = df.groupby(['user_id','product_id'])['order_number'].apply(list).reset_index()
-    interval_n_dict = build_withinN_order(user_prod_orn)
-    
+def collect_order_stats(data,interval_dict,intl):
     interval_stats = {}
-    prod_orn_max = df.groupby(['user_id','product_id'])['reverse_order_number'].min().reset_index()
+    prod_orn_max = data.groupby(['user_id','product_id'])['reverse_order_number'].min().reset_index()
     rows = tqdm(prod_orn_max.iterrows(),total=prod_orn_max.shape[0],desc='collecting n order stat',leave=False)
     for _,row in rows:
         user,prod = row['user_id'],row['product_id']
         rev_orn = row['reverse_order_number']
-        key = rev_orn - args.mode
+        key = rev_orn - intl
         key = key if key <= 5 else 5
-        intl_cnt = interval_n_dict[prod][key]['cnt']
-        intl_prob = interval_n_dict[prod][key]['prob']
+        intl_cnt = interval_dict[prod][key]['cnt']
+        intl_prob = interval_dict[prod][key]['prob']
         interval_stats[(user,prod)] = [intl_cnt,intl_prob]
+    return interval_stats
+    
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--mode',required=True,choices=[0,1],type=int)
+    args = parser.parse_args()
+    suffix = 'test' if args.mode==0 else 'train'
+    
+    data = pd.read_csv('data/orders_info.csv')
+    data_tr = data[data['cate']=='train']
+    data_te = data[data['cate']=='test']
+    if suffix == 'train':
+        df_tr = data_tr[data_tr['reverse_order_number']>0]
+        df_te = data_te[data_te['reverse_order_number']>1]
+        df = pd.concat([df_tr,df_te])
+
+        user_prod_orn = df.groupby(['user_id','product_id'])['order_number'].apply(list).reset_index()
+        interval_n_dict = build_withinN_order(user_prod_orn)
+        interval_stats_tr = collect_order_stats(df_tr,interval_n_dict,0)
+        interval_stats_te = collect_order_stats(df_te,interval_n_dict,1)
+        interval_stats = interval_stats_tr | interval_stats_te
+    else:
+        df = data_te[data_te['reverse_order_number']>0]
+        user_prod_orn = df.groupby(['user_id','product_id'])['order_number'].apply(list).reset_index()
+        interval_n_dict = build_withinN_order(user_prod_orn)
+        interval_stats = collect_order_stats(df,interval_n_dict,0)
 
     interval_stats = pd.DataFrame.from_dict(interval_stats,orient='index',columns=['cnt','prob']).add_prefix('n_order_').reset_index()
     interval_stats['user_id'],interval_stats['product_id'] = zip(*interval_stats['index'])
@@ -83,3 +100,5 @@ if __name__ == '__main__':
 
 
 #%%
+
+

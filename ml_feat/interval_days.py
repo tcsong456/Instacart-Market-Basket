@@ -73,28 +73,30 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--mode',required=True,choices=[0,1],type=int)
     args = parser.parse_args()
+    suffix = 'test' if args.mode==0 else 'train'
     
     data = pd.read_csv('data/orders_info.csv')
-    target_data = data[data['reverse_order_number']==args.mode]
-    df = data[data['reverse_order_number']>args.mode]
+    data_tr = data[data['cate']=='train']
+    data_te = data[data['cate']=='test']
+    if suffix == 'train':
+        df_tr = data_tr[data_tr['reverse_order_number']>0]
+        df_te = data_te[data_te['reverse_order_number']>1]
+        df = pd.concat([df_tr,df_te])
+        del df_tr,df_te
+        target_tr = data_tr[data_tr['reverse_order_number']==0]
+        target_te = data_te[data_te['reverse_order_number']==1]
+        target_data = pd.concat([target_tr,target_te])
+        del target_tr,target_te
+    else:
+        df = data_te[data_te['reverse_order_number']>0]
+        target_data = data_te[data_te['reverse_order_number']==0]
+
     df = df.sort_values(['user_id','order_number'])
     order_info = data_builder(df)
     prod_intervals = stat_interval_days(order_info)
     product_interval_stats = pd.DataFrame.from_dict(prod_intervals,orient='index',columns=['min','max','mean','median','std']
                                                     ).add_prefix('prod_').reset_index().rename(columns={'index':'product_id'})
     user_prod_interval_days = interval_days_collector(data,target_data,product_interval_stats)
-    
-    # df = data[(data['reverse_order_number']>args.mode)&(data['reverse_order_number']<=args.mode+5)]
-    # df = df.sort_values(['user_id','order_number'])
-    # order_info = data_builder(df)
-    # prod_intervals = stat_interval_days(order_info)
-    # product_interval_stats = pd.DataFrame.from_dict(prod_intervals,orient='index',columns=['min','max','mean','median','std']
-    #                                                 ).add_prefix('prod_').reset_index().rename(columns={'index':'product_id'})
-    # user_prod_interval_days_recent = interval_days_collector(data,target_data,product_interval_stats)
-    # user_prod_interval_days_recent = user_prod_interval_days_recent.set_index(['user_id','product_id']).add_suffix('_5').reset_index()
-    # user_prod_interval_days = pd.merge(user_prod_interval_days,user_prod_interval_days_recent,how='left',on=['product_id'])
-    
-    suffix = 'test' if args.mode==0 else 'train'
     user_prod_interval_days.to_csv(f'metadata/prod_interval_days_{suffix}.csv',index=False)
 
 #%%

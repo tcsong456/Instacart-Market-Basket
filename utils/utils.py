@@ -31,7 +31,7 @@ def optimize_dtypes(df):
         elif is_float_dtype(col_data):
             if col_data.min() >= np.finfo(np.float16).min and col_data.max() <= np.finfo(np.float16).max:
                 df[col] = df[col].astype(np.float16)
-            elif col_data.min() >= np.finfo(np.float32).min and col_data.max() <= np.finfo()(np.float32).max:
+            elif col_data.min() >= np.finfo(np.float32).min and col_data.max() <= np.finfo(np.float32).max:
                 df[col] = df[col].astype(np.float32)
             else:
                 pass

@@ -14,24 +14,12 @@ from tqdm import tqdm
 from nn_model.reorder_lstm import ReorderLSTM
 from embedding.trainer import Trainer
 from utils.loss import NextBasketMSELoss,SeqMSELoss
-from utils.utils import logger,pickle_save_load,TMP_PATH
+from utils.utils import pickle_save_load,TMP_PATH
 
 convert_str_int = lambda x:list(map(int,x))
 convert_index_cuda = lambda x:torch.from_numpy(x).long().cuda()
 def reorder_data_maker(data,max_len,mode='train'):
-    suffix = mode + '.pkl'
-    save_path = [path+'_'+suffix for path in ['user_order','order_data_dict']]
-    check_files = np.all([os.path.exists(os.path.join(TMP_PATH,file)) for file in save_path])
-    temp_dict = pickle_save_load(os.path.join(TMP_PATH,f'temporal_dict_{suffix}'),mode='load')
-    if check_files:
-        logger.info('loading temporary data')
-        data_dict = pickle_save_load(os.path.join(TMP_PATH,f'order_data_dict_{suffix}'),mode='load')
-        keys = list(data_dict.keys())
-        rand_index = np.random.randint(0,len(keys),1)[0]
-        rand_key = keys[rand_index]
-        feature_dim = data_dict[rand_key][0].shape[-1] - 1
-        user_product = pickle_save_load(os.path.join(TMP_PATH,f'user_order_{suffix}'),mode='load')
-        return user_product,data_dict,temp_dict,feature_dim
+    temp_dict = pickle_save_load(os.path.join(TMP_PATH,f'temporal_dict_{mode}.pkl'),mode='load')
         
     base_info = []
     data_dict = {}
@@ -94,11 +82,6 @@ def reorder_data_maker(data,max_len,mode='train'):
             pbar.update(1)
     users = np.array(base_info).reshape(-1,1)
     
-    save_data  = [users,data_dict]
-    for path,file in zip(save_path,save_data):
-        path = os.path.join(TMP_PATH,path)
-        pickle_save_load(path,file,mode='save') 	
-    
     return users,data_dict,temp_dict,reorder_info_dim
 
 def reorder_dataloader(inp,
@@ -158,7 +141,7 @@ class ReorderTrainer(Trainer):
         self.dataloader = reorder_dataloader
         self.data_maker = reorder_data_maker
         self.model = ReorderLSTM
-        self.model_name = self.model.__class__.__name__
+        self.model_name = self.model.__name__
         self.attr = 'reorder'
         
         self.emb_list = ['user_id']
@@ -195,7 +178,7 @@ if __name__ == '__main__':
                             early_stopping=2,
                             epochs=10,
                             eval_epoch=1)
-    trainer.train(use_amp=False,ev='')
-    trainer.predict(save_name='user_reorder_pred',ev='')
+    trainer.train(use_amp=False)
+    trainer.predict(save_name='user_reorder_pred')
 
 #%%

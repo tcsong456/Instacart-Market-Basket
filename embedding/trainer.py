@@ -88,7 +88,7 @@ class Trainer:
         
         return pred_emb
     
-    def train(self,use_amp=False,ev=''):
+    def train(self,use_amp=False):
         core_info_tr = self.build_data_dl(mode='train')
         if 'product' in self.model_name.lower():
             model = self.model(self.input_dim,self.output_dim,*self.max_index_info,32,32,[2]*5,[2**i for i in range(5)])
@@ -154,7 +154,7 @@ class Trainer:
                 model.eval()
                 total_loss_val,ite = 0,1
                 eval_dl = self.dataloader(*core_info_tr,1024,False,False)
-                eval_batch_loader = tqdm(eval_dl,total=core_info_tr[0].shape[0]//1024,desc='evaluating next order basket',
+                eval_batch_loader = tqdm(eval_dl,total=core_info_tr[0].shape[0]//1024,desc=f'evaluating next {self.attr} basket',
                                           leave=False,dynamic_ncols=True)
                 
                 with torch.no_grad():
@@ -186,7 +186,7 @@ class Trainer:
                                   'optimizer_state_dict':optimizer.state_dict()}
                     os.makedirs('checkpoint',exist_ok=True)
                     torch.save(checkpoint,checkpoint_path)
-                    np.save(f'metadata/{ev}user_{self.attr}_eval.npy',pred_embs_eval)
+                    np.save(f'metadata/user_{self.attr}_eval.npy',pred_embs_eval)
                     no_improvement = 0
                 else:
                     no_improvement += 1
@@ -195,7 +195,7 @@ class Trainer:
                     logger.info('early stopping is trggered,the model has stopped improving')
                     return
     
-    def predict(self,save_name,ev=''):
+    def predict(self,save_name):
         predict_data = self.agg_data[self.agg_data['eval_set']=='test']
         data_te = self.data_maker(predict_data,self.max_len,*self.data_maker_dicts,mode='test')
         users,feat_dict,temporal_dict,feat_dim = data_te
@@ -227,7 +227,7 @@ class Trainer:
         
         predictions = np.concatenate(predictions).astype(np.float32)
         os.makedirs('metadata',exist_ok=True)
-        pred_path = f'metadata/{ev}{save_name}.npy'
+        pred_path = f'metadata/{save_name}.npy'
         np.save(pred_path,predictions)
         logger.info(f'predictions saved to {pred_path}')
         return predictions

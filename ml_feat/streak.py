@@ -55,9 +55,17 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--mode',required=True,choices=[0,1],type=int)
     args = parser.parse_args()
-    
+    suffix = 'test' if args.mode==0 else 'train'
     data = pd.read_csv('data/orders_info.csv')
-    df = data[data['reverse_order_number']>args.mode] 
+    data_tr = data[data['cate']=='train']
+    data_te = data[data['cate']=='test']
+    if suffix == 'train':
+        df_tr = data_tr[data_tr['reverse_order_number']>0]
+        df_te = data_te[data_te['reverse_order_number']>1]
+        df = pd.concat([df_tr,df_te])
+    else:
+        df = data_te[data_te['reverse_order_number']>0]
+        
     df = df.sort_values(['user_id','order_number'])
     user_prod_orn = df.groupby(['user_id','product_id'])['order_number'].apply(list).reset_index()
     user_orn_max = df.groupby(['user_id'])['order_number'].max()
@@ -65,8 +73,6 @@ if __name__ == '__main__':
     user_prod_orn = user_prod_orn.merge(user_orn_max,how='left',on=['user_id'])
     streak = build_streaks(user_prod_orn)
     streak_stat = df_stats_agg(streak,'streak').reset_index()
-    
-    suffix = 'test' if args.mode==0 else 'train'
     streak_stat.to_csv(f'metadata/streak_{suffix}.csv',index=False)
 
 

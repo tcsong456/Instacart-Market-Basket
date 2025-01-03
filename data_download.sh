@@ -18,3 +18,4 @@ data=$(ls data/)
 unzip data/$data -d data
 rm data/$data
 find data/ -name '*.zip' -exec unzip -o {} -x "__MACOSX/*" -d data \; -delete 
+mkdir -p metadata/ data/tmp/

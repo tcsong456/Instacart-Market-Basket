@@ -11,29 +11,15 @@ import torch
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
-from itertools import product
-import lightgbm as lgb
 from nn_model.product_lstm import ProductTemporalNet
-from utils.utils import logger,pickle_save_load,TMP_PATH
+from utils.utils import pickle_save_load,TMP_PATH
 from itertools import chain
 from embedding.trainer import Trainer
 
 convert_index_cuda = lambda x:torch.from_numpy(x).long().cuda()
 
 def product_data_maker(data,max_len,prod_aisle_dict,prod_dept_dict,mode='train'):
-    suffix = mode + '.pkl'
-    save_path = [path+'_'+suffix for path in ['user_prod','product_data_dict']]
-    check_files = np.all([os.path.exists(os.path.join(TMP_PATH,file)) for file in save_path])
-    temp_dict = pickle_save_load(os.path.join(TMP_PATH,f'temporal_dict_{suffix}'),mode='load')
-    if check_files:
-        logger.info('loading temporary data')
-        data_dict = pickle_save_load(os.path.join(TMP_PATH,f'product_data_dict_{suffix}'),mode='load')
-        keys = list(data_dict.keys())
-        rand_index = np.random.randint(0,len(keys),1)[0]
-        rand_key = keys[rand_index]
-        feature_dim = data_dict[rand_key][0].shape[-1] - 1
-        user_product = pickle_save_load(os.path.join(TMP_PATH,f'user_prod_{suffix}'),mode='load')
-        return user_product,data_dict,temp_dict,feature_dim
+    temp_dict = pickle_save_load(os.path.join(TMP_PATH,f'temporal_dict_{mode}.pkl'),mode='load')
         
     base_info = []
     data_dict = {}
@@ -51,7 +37,7 @@ def product_data_maker(data,max_len,prod_aisle_dict,prod_dept_dict,mode='train')
             
             products,next_products = products[:-1],products[-1]
             next_products = next_products.split('_')
-            orders = [product.split('_') for product in products]
+            orders = [prod.split('_') for prod in products]
             reorders_,next_reorders = reorders[:-1],reorders[-1]
             
             reorders_ = [list(map(int,reorder.split('_'))) for reorder in reorders_]
@@ -152,11 +138,6 @@ def product_data_maker(data,max_len,prod_aisle_dict,prod_dept_dict,mode='train')
             pbar.update(1)
     user_prod = np.stack(base_info)
     
-    save_data  = [user_prod,data_dict]
-    for path,file in zip(save_path,save_data):
-        path = os.path.join(TMP_PATH,path)
-        pickle_save_load(path,file,mode='save') 	
-    
     return user_prod,data_dict,temp_dict,feature_dim
 
 def product_dataloader(inp,
@@ -217,7 +198,7 @@ class ProductTrainer(Trainer):
                          eval_epoch=eval_epoch)
         self.dataloader = product_dataloader
         self.model = ProductTemporalNet
-        self.model_name = self.model.__class__.__name__
+        self.model_name = self.model.__name__
         self.data_maker = product_data_maker
         self.emb_list = ['user_id','product_id','aisle_id','department_id']
         self.max_index_info = [data[col].max()+1 for col in self.emb_list] + [self.max_len]
@@ -237,113 +218,6 @@ class ProductTrainer(Trainer):
         self.input_dim = self.temp_dim + prod_dim + len(self.emb_list) * 50
         self.agg_data = agg_data
         return [user_prod,data_dict,temp_dict]
-    
-    def evaluate_or_submit(self,mode='evaluate'):
-        params = {
-            'task': 'train',
-            'boosting_type': 'gbdt',
-            'objective': 'binary',
-            'metric': {'binary_logloss'},
-            'learning_rate': .02,
-            'num_leaves': 32,
-            'max_depth': 12,
-            'feature_fraction': 0.35,
-            'bagging_fraction': 0.9,
-            'bagging_freq': 2,
-        }
-        if mode == 'evaluate':
-            addr = 'evaluation'
-        else:
-            addr = ''
-        suffix = [s+'.npy' for s in ['eval','pred']]
-        prefix = ['user_product','user_aisle','user_reorder','aisle_prob','product_prob']
-        files = ['_'.join(comb) for comb in product(prefix,suffix)]
-        checks = [os.path.exists(os.path.join(f'metadata/{addr}',file)) for file in files]
-        assert np.all(checks),'all the eval and pred file of both user_product and user_aisle must be saved'
-        
-        data = [np.load(os.path.join(f'metadata/{addr}',file)) for file in files]
-        user_prod_eval,user_prod_pred,user_aisle_eval,user_aisle_pred,user_reorder_eval,user_reorder_pred,\
-        aisle_prob_eval,aisle_prob_pred,product_prob_eval,product_prob_pred = data
-        
-        nmf_item_emb = np.load('metadata/nmf_item_emb.npy')
-        nmf_item_feat = [f'item{i}' for i in range(24)]
-        nmf_item_emb = pd.DataFrame(nmf_item_emb,columns=['product_id']+nmf_item_feat)
-        
-        user_reorder_eval = user_reorder_eval[:,:-1]
-        user_aisle_eval = user_aisle_eval[:,:-1]
-        user_prod_eval[:,1] -= 1;user_prod_pred[:,1] -= 1
-        label = user_prod_eval[:,-1]
-        
-        user_prod_eval = np.delete(user_prod_eval,-1,axis=1)
-        prod_feat_name = [f'prodf_{i}' for i in range(51)]
-        user_prod_eval = pd.DataFrame(user_prod_eval,columns=['user_id','product_id']+prod_feat_name)
-        user_prod_eval['aisle_id'] = user_prod_eval['product_id'].map(self.prod_aisle_dict)
-        aisle_feat_name = [f'aislef_{i}' for i in range(51)]
-        user_aisle_eval = pd.DataFrame(user_aisle_eval,columns=['user_id','aisle_id']+aisle_feat_name)
-        reorder_feat_name = [f'reorderf_{i}' for i in range(51)]
-        user_reorder_eval = pd.DataFrame(user_reorder_eval,columns=['user_id']+reorder_feat_name)
-        aisle_prob_feat = [f'aisle_prob_{i}' for i in range(1)]
-        aisle_prob_eval = pd.DataFrame(aisle_prob_eval,columns=['user_id','aisle_id']+aisle_prob_feat)
-        prod_prob_feat = [f'prod_prob_{i}' for i in range(1)]
-        product_prob_eval = pd.DataFrame(product_prob_eval,columns=['user_id','product_id']+prod_prob_feat)
-        data_tr = user_prod_eval.merge(user_aisle_eval,how='left',on=['user_id','aisle_id']).merge(nmf_item_emb,how='left',
-                                    on=['product_id']).merge(user_reorder_eval,how='left',on=['user_id']).merge(aisle_prob_eval,
-                                    how='left',on=['user_id','aisle_id']).merge(product_prob_eval,how='left',on=['user_id','product_id'])
-        del data_tr['aisle_id'],data_tr['user_id'],data_tr['product_id']
-        data_tr = np.array(data_tr).astype(np.float32)
-        
-        user_prod_pred = pd.DataFrame(user_prod_pred,columns=['user_id','product_id']+prod_feat_name)
-        user_prod_pred['aisle_id'] = user_prod_pred['product_id'].map(self.prod_aisle_dict)
-        user_aisle_pred = pd.DataFrame(user_aisle_pred,columns=['user_id','aisle_id']+aisle_feat_name)
-        user_reorder_pred = pd.DataFrame(user_reorder_pred,columns=['user_id']+reorder_feat_name)
-        aisle_prob_pred = pd.DataFrame(aisle_prob_pred,columns=['user_id','aisle_id']+aisle_prob_feat)
-        product_prob_pred = pd.DataFrame(product_prob_pred,columns=['user_id','product_id']+prod_prob_feat)
-        data_eval = user_prod_pred.merge(user_aisle_pred,how='left',on=['user_id','aisle_id']).merge(nmf_item_emb,how='left',
-                                        on=['product_id']).merge(user_reorder_pred,how='left',on=['user_id']).merge(aisle_prob_pred,
-                                        how='left',on=['user_id','aisle_id']).merge(product_prob_pred,how='left',on=['user_id','product_id'])
-        del data_eval['aisle_id']
-
-        user_prod_preds = np.array(data_eval[['user_id','product_id']]).astype(np.int32)
-        data_eval = np.array(data_eval.iloc[:,2:])
-        
-        x_train = lgb.Dataset(data_tr,label=label)
-        model = lgb.train(params,x_train,num_boost_round=500)
-        predictions = model.predict(data_eval)
-        predictions = np.concatenate([user_prod_preds,predictions.reshape(-1,1)],axis=1)
-        predictions = pd.DataFrame(predictions,columns=['user_id','product_id','predictions'])
-        if mode == 'submit':
-            predictions.to_csv('metadata/user_product_prob.csv',index=False)
-            return predictions
-        
-        lagging = self.lagging if np.sign(self.lagging) < 0 else -self.lagging
-        agg_data = self.build_agg_data('product_id')
-        agg_data_te = agg_data[agg_data['eval_set']=='test']
-        rows = tqdm(agg_data_te.iterrows(),total=agg_data_te.shape[0],desc='collecting label for evaluation')
-        user_prods = []
-        for _,row in rows:
-            user,prod = row['user_id'],row['product_id']
-            reorder = row['reordered']
-            prod = prod[lagging]
-            reorder = reorder[lagging]
-            reorder = list(map(int,reorder.split('_')))
-            products = np.array(list(map(int,prod.split('_'))))
-            users = np.array([user] * len(products))
-            label = np.array([1] * len(products))
-            if sum(reorder) == 0:
-                products = np.append(products,0)
-                users = np.append(users,user)
-                label = np.append(label,1)
-            user_prod = np.stack([users,products,label],axis=1)
-            user_prods.append(user_prod)
-        user_prods = np.concatenate(user_prods)
-        user_prods = pd.DataFrame(user_prods,columns=['user_id','product_id','label'])
-        predictions = user_prods.merge(predictions,how='outer',on=['user_id','product_id'])
-        predictions[['label','predictions']] = predictions[['label','predictions']].fillna(0)
-        y_true,y_pred = np.array(predictions['label']),np.array(predictions['predictions'])
-        
-        from sklearn.metrics import log_loss
-        loss = log_loss(y_true,y_pred)
-        logger.info(f'lightgbm prediction loss:{loss:.05f}')
 
 
 if __name__ == '__main__':
@@ -361,9 +235,8 @@ if __name__ == '__main__':
                                     early_stopping=2,
                                     warm_start=False,
                                     optim_option='adam')
-    # product_trainer.train(use_amp=False,ev='')
-    # product_trainer.predict(save_name='user_product_pred',ev='')
-    product_trainer.evaluate_or_submit(mode='submit')
+    product_trainer.train(use_amp=False)
+    product_trainer.predict(save_name='user_product_pred')
 
 
 

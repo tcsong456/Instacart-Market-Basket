@@ -27,7 +27,6 @@ class AisleLSTM(nn.Module):
                             output_dim,
                             batch_first=True)
         self.final = nn.Linear(output_dim,1)
-        self.input_dim = input_dim
     
     def forward(self,x,users,aisles,depts,dows,hours,tzs,days):
         oh_dows = F.one_hot(dows,num_classes=7)
@@ -50,3 +49,4 @@ class AisleLSTM(nn.Module):
         return outputs,h
 
 #%%
+

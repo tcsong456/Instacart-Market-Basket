@@ -47,6 +47,8 @@ def create_orders_info(path):
     orders['reverse_order_number'] = orders['max_order_number'] - orders['order_number']
     del orders['max_order_number']
     
+    orders['cate'] = orders.groupby(['user_id'])['eval_set'].transform(lambda x:x.iloc[-1])
+    
     for col,dtype in zip(orders.dtypes.index,orders.dtypes.values):
         if is_float_dtype(dtype):
             orders[col] = orders[col].astype(np.int32)
@@ -87,5 +89,7 @@ def data_processing(data,save=False):
             r.to_pickle(path)
     return r
 
+if __name__ == '__main__':
+    create_orders_info('data/')
 
 #%%

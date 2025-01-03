@@ -38,12 +38,18 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--mode',required=True,choices=[0,1],type=int)
     args = parser.parse_args()
-    
     data = pd.read_csv('data/orders_info.csv')
-    df = data[data['reverse_order_number']>args.mode]
+    suffix = 'test' if args.mode==0 else 'train'
+    data_tr = data[data['cate']=='train']
+    data_te = data[data['cate']=='test']
+    if suffix == 'train':
+        df_tr = data_tr[data_tr['reverse_order_number']>0]
+        df_te = data_te[data_te['reverse_order_number']>1]
+        df = pd.concat([df_tr,df_te])
+    else:
+        df = data_te[data_te['reverse_order_number']>0]
+
     df['counter'] = 1
-    # user_prod_dow = build_up_tmp(df,'order_dow')
-    # user_prod_tz = build_up_tmp(df, 'time_zone')
     unique_prod_dict = df.groupby('user_id')['product_id'].apply(set).to_dict()
     dow_data = build_tmp(df,'order_dow')
     dow_prob_dict,dow_cnt_dict = convert(dow_data,'order_dow','order_dow_prob')
@@ -52,7 +58,12 @@ if __name__ == '__main__':
     tz_prob_dict,tz_cnt_dict = convert(tz_data,'time_zone','time_zone_prob')
     
     temporal_dict = {}
-    df = data[data['reverse_order_number']== args.mode]
+    if suffix == 'train':
+        df_tr = data_tr[data_tr['reverse_order_number']==0]
+        df_te = data_te[data_te['reverse_order_number']==1]
+        df = pd.concat([df_tr,df_te])
+    else:
+        df = data_te[data_te['reverse_order_number']==0]
     df = df.drop_duplicates(['user_id','order_id'])
     rows = tqdm(df.iterrows(),total=df.shape[0],desc='collecting temporal data')
     for _,row in rows:
@@ -67,7 +78,6 @@ if __name__ == '__main__':
     temp_data = pd.DataFrame.from_dict(temporal_dict,orient='index',columns=['dow_prob','dow_cnt','tz_prob','tz_cnt']).reset_index()
     temp_data['user_id'],temp_data['product_id'] = zip(*temp_data['index'])
     del temp_data['index']
-    suffix = 'test' if args.mode==0 else 'train'
     temp_data.to_csv(f'metadata/dow_tz_prob_{suffix}.csv',index=False)
 
 #%%
